@@ -1,0 +1,37 @@
+Application Flow Based on the Document                                                                                
+  1. Input Phase                                                                                                        
+  - User uploads a reference Adobe Illustrator (.AI) mockup file
+  - User uploads a sample/example AI file to teach the expected structure
+  - User uploads an Excel sheet containing columns like: name, number, size (large, xxl, medium, etc.)
+  - User specifies pattern definitions per garment part (front, back, sleeves, etc.)
+
+  2. Parsing & Learning Phase
+
+  - System reads the sample AI file to understand the expected layer/artboard/asset structure
+  - AI analyzes the Excel sheet to extract all orders (name, number, size combinations)
+  - System learns the garment part structure and sizing patterns from the sample file
+
+  3. AI Processing Phase
+
+  - LLM converts business instructions into a machine-readable generation plan
+  - AI orchestrator maps each Excel row to the correct size template and garment part
+  - System determines how names and numbers should be placed (whether repeated on each garment part or consolidated)
+
+  4. Generation Phase
+
+  - Renderer clones the design into a single AI file with separate artboards for each size/part combination
+  - Personalized values (names/numbers) are injected appropriately based on the design structure
+  - Each size (large, xxl, medium, etc.) gets its own set of artboards for different garment parts
+
+  5. Export Phase
+
+  - System exports individual JPEG files for each artboard separately (front, back, sleeves, etc.)
+  - Creates a consolidated AI file containing all designs organized by size and garment part
+  - Groups output by article and prepares a zip download
+
+  6. Output Phase
+
+  - Single consolidated Adobe AI file with all designs
+  - Individual JPEG exports for each artboard (front, back, sleeves, etc.)
+  - Preview screen showing all generated items
+  - Downloadable zip archive containing both the AI file and individual JPEGs.

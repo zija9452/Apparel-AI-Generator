@@ -1,0 +1,88 @@
+Yeh theory "Advanced Multimodal Differential Feedback Loop" par mabni hai. Iska maqsad poora order dobara banaye baghair sirf "Ghaltiyon" ko surgically theek karna hai.
+
+  Advanced Self-Correction Loop (Technical Theory)
+
+  1. Multimodal Vision Analysis (The "Eye")
+  Jab Illustrator initial images export karega, to hamara Validation Agent (Gemini-2.4-Vision) ko do cheezain di jayengi:
+   * Source: Aapki upload ki hui Original Mockup Image.
+   * Result: Script ke banaye hue individual artboards (Front, Back, Sleeves).
+
+  Agent sirf side-by-side dekhay ga nahi, balkay har part ke liye aik "Difference Matrix" banaye ga (maslan: Mockup mein Logo center mein hai, lekin Result mein 2cm left par hai).
+
+  2. Detailed Error JSON (The "Brain")
+  Agent "Theek nahi hai" kehne ke bajaye aik Correction JSON generate karega jo aisa dikhe ga:
+
+   1 {
+   2   "part": "Large Front",
+   3   "status": "FAIL",
+   4   "mistakes": [
+   5     {"type": "SCALING", "issue": "Design is 5% too narrow", "fix": {"scale_x": 1.05}},
+   6     {"type": "POSITION", "issue": "Lower than mockup", "fix": {"move_y": "+10px"}},
+   7     {"type": "COLOR", "issue": "Neck rib is too dark", "fix": {"brightness": "+15%"}}
+   8   ]
+   9 }
+
+  3. Differential Re-Execution (The "Surgery")
+  Yeh is theory ka sab se advanced part hai. Hamari automation script (JSX) mein aik "Repair Mode" hoga.
+   * Pura Order nahi: Backend sirf woh items script ko dobara bhejay ga jin ka status "FAIL" tha.
+   * Artboard Replacement: Script wahi .ai file khole gi jo pehle bani thi, usme se purana (ghalat) design delete karegi aur usi artboard par naya corrected design paste kar degi.
+   * Targeted Fix: Baqi 90% kaam jo sahi tha, usay haath bhi nahi lagaya jaye ga.
+
+  4. The Recursive Loop (Self-Learning)
+  Loop tab tak chalta rahe ga jab tak Agent har part ko "98% Visual Match" ka certificate na de de.
+   * Iteration 1: Normal generate hua (Mistake: Logo chota reh gaya).
+   * Iteration 2: Sirf Logo ko 10% bada kiya gaya (Mistake: Logo thora upar chala gaya).
+   * Iteration 3: Position theek ki gayi -> Status: APPROVED.
+
+  Is Setup ke liye kya chahiye?
+   1. Multimodal Agent: Jo images ko analyze karke coordinates (X, Y) aur scaling values nikal sakay.
+   2. Stateful JSX: Aik aisi script jo purani file ke andar ja kar layers ko update kar sakay (Surgical update).
+   3. Visual Comparison Server: Jo GPU par images ko compare kare.
+
+  Summary:
+  Is system se aapka project aik "Self-Aware Factory" ban jaye ga jo apni ghaltiyan khud dekh kar, khud theek kar ke aapko final perfect file dega. Insaani kaam sirf Excel upload karna reh jaye ga.
+
+  Kya aap chahte hain ke main is "Surgical Repair" ka aik framework aapke JSX mein add kar doon? Taake future mein jab aap Agent connect karein, to script pehle se tayyar ho.
+
+
+Advanced Multimodal Differential Feedback Loop ki technical theory ko hum mazeed "Surgical Precision" aur "Strict Validation" ke aitbar se char main pillars mein divide kar sakte hain:
+
+  1. Pillar: Deep-Nested Path Traversal (The "Search")
+  Agar aapka design layers ke andar groups, aur groups ke andar mazeed clipping masks mein chhupa hua hai, to script "Shallow Search" (upar-upar se dekhna) ke bajaye Recursive Deep-Search algorithm ka istemal karegi.
+   * Theory: Har element ka aik unique "Path DNA" (e.g., Front_Panel > Graphics > Brand_Logo > Vector_Path) define hoga.
+   * Validation: Jab script kaam shuru karegi, wo pehle pura tree scan karegi. Agar koi target name (maslan "Logo_Base") missing hai, to wo "Guessing" nahi karegi.
+
+  2. Pillar: Halt-on-Failure (The "Emergency Brake")
+  Aap ne jo point uthaya ke "execution rok do", wo is system ki integrity ke liye lazmi hai.
+   * Theory: Isay Atomic Execution kehte hain. Yaani ya to pura task 100% sahi hoga, ya phir wo zero result dega.
+   * Mechanism: Script mein har step par try-catch blocks honge. Agar koi GroupItem ya PathItem nahi milta, to script "Error Silencing" ke bajaye aik Exception Throw karegi jo Backend ko foran signal bhej dega: "Path 'XYZ' not found.
+     Aborting to prevent corrupted output."
+
+  3. Pillar: Differential Metadata (The "Memory")
+  Surgical repair ke liye zaroori hai ke script ko pata ho ke pichli baar kya hua tha.
+   * Theory: Har artboard ke saath aik Metadata Tag save kiya jayega.
+   * Function: Jab "Repair Mode" on hoga, script sirf un artboards ko target karegi jin ka ID Correction JSON mein "FAIL" mark hua hai. Yeh logic Illustrator ki Layer.visible aur Layer.locked properties ko use karke baqi sahi kaam ko
+     protect karega.
+
+  4. Pillar: Multimodal Re-Alignment (The "Correction")
+  Jab Gemini-Vision bataye ga ke "Logo 5px right move karo", to script usay mathematical transform mein convert karegi.
+   * Theory: Relative Positioning vs Absolute Positioning.
+   * Logic: Script us specific object ka geometricBounds nikalegi aur Gemini ke bataye hue "Offset" (X, Y) ko current coordinates mein plus/minus kar degi.
+
+  ---
+
+  Error Logic (Theory):
+
+   1 function findElementStrict(parent, targetName) {
+   2     var element = parent.pageItems.getByName(targetName);
+   3     if (!element) {
+   4         throw new Error("CRITICAL_FAILURE: Element '" + targetName + "' not found in hierarchy.");
+   5     }
+   6     return element;
+   7 }
+
+  Summary of Theory:
+  Yeh system "Trial and Error" par nahi, balkay "Verify then Execute" par chalta hai. Agar system ko 1% bhi shak ho ke koi element (path/group) missing hai ya naam galat hai, to wo galat design banane ke bajaye system ko foran Hard-Stop
+  kar dega, taake aapka time aur resources zaya na hon.
+
+  Kya hum is "Strict Validation" logic ko aapki existing JSX script mein incorporate karna shuru karein?

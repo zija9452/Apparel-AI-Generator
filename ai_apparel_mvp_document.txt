@@ -1,0 +1,166 @@
+MVP Document
+AI Tool for Apparel Design Replication and Order Generation
+Purpose: Convert one reference Adobe Illustrator (Mockup) file into multiple production-ready order outputs using an Excel sheet of names, numbers, and sizes, with support for multiple garment parts and sizes in a single AI file.
+Product	AI-assisted apparel order generator
+Primary users	Production / design teams, merch ops, and print-house operators
+
+1. Problem Statement
+Teams often receive one master Adobe Illustrator mockup and a spreadsheet containing customer-specific data. The manual work is repetitive: copying the design, changing name/number/size fields, splitting artwork into front, back, sleeves, collar, and twill tape outputs, then exporting every order as separate JPG files. This is slow, error-prone, and difficult to scale when a single article contains dozens or hundreds of personalized orders.
+
+2. Updated Proposed MVP
+Build a web application that accepts one reference AI file, a size/pattern definition, and an Excel sheet with columns such as name, number, and sizes (large, xxl, medium, etc.). The system uses an LLM-powered orchestration layer to understand the production intent, map each row to the correct size pattern, replicate the design across multiple garment parts, and generate output assets automatically in a single AI file with separate artboards for each size/part combination, plus individual JPEG exports.
+
+3. Core Inputs and Outputs
+Inputs	Outputs
+1) Adobe Illustrator reference file
+2) Example AI file to teach the expected structure
+3) Excel sheet with name, number, size (large, xxl, medium, etc.)
+4) Pattern definitions per garment part
+5) Prompt / production rules	1) Single consolidated AI file with all designs organized by size and garment part
+2) Individual JPEG exports for each artboard (front, back, sleeves, collar, twill tape, etc.)
+3) Orders grouped by article and size
+4) Structured JSON / CSV summary
+5) Validation report for missing fields or mismatches
+
+4. Updated MVP Scope
+•	Upload AI file, sample AI file, and Excel sheet with multiple sizes (large, xxl, medium, etc.).
+•	Read and validate rows from Excel including size specifications.
+•	Infer article structure from the sample AI file and a small set of rules.
+•	Generate a single AI file with separate artboards for each size and garment part combination.
+•	Export individual JPEGs for each artboard (front, back, sleeves, etc.) separately.
+•	Organize names and numbers appropriately - repeated on each medium where needed, or consolidated as specified.
+•	Provide a preview screen and a downloadable zip archive containing both the consolidated AI file and individual JPEG exports.
+•	Log failures when a row is missing a name, number, size, or template mapping.
+
+5. Out of Scope for MVP
+•	Fully autonomous creative design generation.
+•	Complex vector editing with perfect Illustrator-native round-tripping.
+•	Advanced approval workflows, role-based access control, and multi-brand tenancy.
+•	High-volume rendering optimization beyond the initial batch workflow.
+
+6. Updated Workflow
+1.	User uploads the reference AI file and a sample/example AI file.
+2.	User uploads Excel with columns like name, number, size (large, xxl, medium, etc.), and optional team / order id.
+3.	System reads the sample AI file to learn the expected layer / artboard / asset structure.
+4.	LLM converts business instructions into a machine-readable generation plan.
+5.	Backend maps each Excel row to the correct size template and garment part.
+6.	Renderer clones the design into a single AI file with separate artboards for each size/part combination, injecting personalized values appropriately.
+7.	System exports individual JPEGs for each artboard separately.
+8.	Frontend shows preview cards and final download links for both the consolidated AI file and individual JPEG exports.
+
+7. Recommended Architecture
+Layer	Recommendation	Why it fits	Notes
+Frontend	Next.js 16+ + TailwindCSS	Fast UI for uploads, previews, status, and downloads	Keep the UI simple and batch-oriented
+Backend API	Python + FastAPI	Good for file handling, async jobs, and AI orchestration	Use background tasks or a job queue for renders
+AI orchestration	OpenAI Agents SDK + Gemini API key	Use the agent layer for planning, validation, and structured task execution	Treat the model as a coordinator, not the renderer
+Rendering / file ops	Python workers	Best fit for parsing Excel, manipulating assets, and exporting files	Keep rendering deterministic where possible
+Storage	Object storage + Postgres metadata	Files and structured job data should be separated	Store generated JPGs / zips in object storage
+
+8. Database Recommendation
+For the MVP, the cheapest practical choice is PostgreSQL on a managed serverless platform. Neon is a strong fit when you want low idle cost and a Postgres-first setup; Supabase is also attractive when you want database + auth + storage in one product. For a file-processing MVP, I would choose PostgreSQL with Neon for the core metadata store, and keep generated assets in object storage rather than in the database.
+•	Store users, jobs, uploads, Excel rows, mapping rules, and export status in Postgres.
+•	Store source files and generated JPG / ZIP assets in S3-compatible storage.
+•	Use a job table so rendering can be retried safely without duplicating work.
+
+9. Minimal Data Model
+Table	Purpose	Key fields	Example
+jobs	One processing request	id, user_id, status, article_name, created_at	status = queued
+uploads	Uploaded assets	job_id, file_type, path, checksum	sample_ai_file
+order_rows	Excel rows	job_id, name, number, size, row_index	Ali / 10 / L
+templates	Pattern mapping	garment_part, size_label, asset_path	front / XL
+exports	Generated outputs	job_id, article_group, output_path, preview_path	consolidated AI file + individual JPGs
+
+10. API Surface (MVP)
+•	POST /jobs - create a new processing job.
+•	POST /jobs/{id}/uploads - upload AI, example AI, and Excel files.
+•	POST /jobs/{id}/run - start generation.
+•	GET /jobs/{id} - job status, progress, and errors.
+•	GET /jobs/{id}/exports - downloadable assets and previews.
+
+11. Acceptance Criteria
+•	The system can take one sample AI file and use it as the reference structure.
+•	The system can read an Excel sheet with name, number, and size values (large, xxl, medium, etc.).
+•	The system generates a single AI file with separate artboards for each size and garment part.
+•	The system exports individual JPEG files for each artboard separately (front, back, sleeves, etc.).
+•	The system organizes names and numbers appropriately across different garment parts and sizes.
+•	The system groups output by article and provides a zip download with both consolidated AI file and individual JPEGs.
+•	The system handles multiple sizes (large, xxl, medium, etc.) correctly with appropriate scaling.
+
+12. Risks and Controls
+•	Illustrator files can be complex; use a constrained template format for the first version.
+•	LLM output should be validated before rendering; never trust raw model text directly.
+•	File rendering may fail for malformed assets; keep a clear error log and retry path.
+•	If exact AI-native editing is too hard, convert the workflow to template-driven artwork generation first.
+
+13. Suggested Build Plan
+•	Phase 1: upload, parsing, validation, and job tracking.
+•	Phase 2: template mapping and deterministic export pipeline.
+•	Phase 3: LLM-based instruction parsing and error explanation.
+•	Phase 4: preview, approvals, and batch download polish.
+
+Recommended MVP stack: Python + FastAPI backend, Next.js 16+ + TailwindCSS frontend, OpenAI Agents SDK for orchestration, Gemini API key for model access, PostgreSQL on Neon as the cheapest practical Postgres option, and object storage for generated files.
+
+AI Apparel Order Generator - MVP v2
+Core Goal
+Upload one Adobe Illustrator mockup (.AI), size patterns, and an Excel file. System generates customized orders by copying design exactly and replacing only name and number.
+Inputs
+1. Mockup AI file with proper layers and text placeholders.
+2. Size pattern AI files (S, M, L, etc.) with panels.
+3. Excel file: order_id, name, number, size.
+AI Scope
+AI extracts structure, detects text fields, and maps design to patterns.
+AI does NOT redesign, recolor, or modify layout.
+Processing Pipeline
+1. Upload files
+2. Parse AI file (layers, text, fonts)
+3. Map size → pattern
+4. Replace name & number
+5. Generate outputs
+Output
+For each order:
+- AI file
+- JPGs: front, back, sleeves, collar, twill tape
+Tech Stack
+Backend: FastAPI (Python)
+AI: OpenAI Agents SDK + Gemini API
+Rendering: Illustrator scripting or SVG pipeline
+Frontend: Next.js 16 + Tailwind
+Database: PostgreSQL (Neon)
+Notes
+Fonts must be provided.
+Design must already be clean and structured.
+System focuses only on copying and personalization.
+
+# Implementation Approach for AI Apparel Order Generator
+
+## Selected Approach: Adobe Illustrator Scripting
+
+We will use Adobe Illustrator's built-in scripting capability (ExtendScript/JavaScript) to programmatically manipulate AI files. This approach involves:
+
+1. Using Adobe's ExtendScript toolkit to write JavaScript that automates Illustrator
+2. Scripts will open AI template files, modify text content, duplicate artboards/layers
+3. Replace text placeholders with actual names/numbers from Excel sheet
+4. Export separate files for each order in required formats
+
+## Server Implementation:
+- Run Illustrator on server with automated scripts
+- Scripts monitor folder for incoming jobs
+- Open template AI file and process data from Excel sheet
+- Export separate files for each order
+
+## Advantages:
+- Full fidelity - maintains all Illustrator features
+- Reliable text replacement in proper layers
+- Preserves fonts, effects, and complex graphics
+- Exact replication of design elements
+
+## Expected Success Rate: 85-90%
+
+With proper templating and structured AI files, this approach has approximately 85-90% chance of producing perfect results, assuming:
+- Templates have properly named layers and text placeholders
+- Consistent file structure in the master AI file
+- Proper font embedding and licensing
+- Clean, organized original design files
+
+The high success rate is due to using Adobe's native engine for file manipulation, ensuring complete compatibility and preservation of design elements.
+
