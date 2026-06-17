@@ -30,15 +30,38 @@ function runAutomation() {
 
         // --- NEW: Mockup Swatch Isolation (Name-only) ---
         try {
-            // 1. Rename ALL swatches in the mockup to prevent naming collisions
-            // We keep them as SPOT colors so we can still track them by name for relinking.
+            // 1. Rename ALL swatches AND spots in the mockup to prevent naming collisions
+            // We also force them to CMYK here so they match the Order Doc definition (avoids "Conflict" popups)
+            
+            // Rename Spots first
+            for (var sp = mockupDoc.spots.length - 1; sp >= 0; sp--) {
+                var spot = mockupDoc.spots[sp];
+                if (spot.name !== "[Registration]" && spot.name.indexOf("MOCK_") !== 0) {
+                    try { 
+                        // Force CMYK mode on the spot itself
+                        if (spot.color.typename === "RGBColor") {
+                            spot.color = rgbToCmyk(spot.color);
+                        }
+                        spot.name = "MOCK_" + spot.name; 
+                    } catch(e) {}
+                }
+            }
+
             for (var s = mockupDoc.swatches.length - 1; s >= 0; s--) {
                 var sw = mockupDoc.swatches[s];
                 if (sw.name !== "[None]" && sw.name !== "[Registration]" && sw.name.indexOf("MOCK_") !== 0) {
-                    try { sw.name = "MOCK_" + sw.name; } catch(e) {}
+                    try { 
+                        // Force CMYK mode on the swatch
+                        if (sw.color.typename === "RGBColor") {
+                            sw.color = rgbToCmyk(sw.color);
+                        } else if (sw.color.typename === "SpotColor" && sw.color.spot.color.typename === "RGBColor") {
+                            sw.color.spot.color = rgbToCmyk(sw.color.spot.color);
+                        }
+                        sw.name = "MOCK_" + sw.name; 
+                    } catch(e) {}
                 }
             }
-            log("All Mockup swatches isolated with 'MOCK_' prefix (Spot identity preserved).");
+            log("All Mockup swatches/spots isolated with 'MOCK_' prefix and converted to CMYK.");
         } catch(e) { log("Isolation Warning: " + e.message); }
 
         var refContext = { spacing: 500 };
@@ -66,8 +89,6 @@ function runAutomation() {
             }
         }
         log("Swatch panel cleared of default colors.");
-
-        app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS;
 
         // 1. PRE-FLIGHT COLOR DETECTION (Smart Swatch & Object Lookup)
         var mockupSourceRGB = null; 
@@ -514,29 +535,82 @@ function runAutomation() {
                 officialSpots[sn.toLowerCase().replace(/[^a-z0-9]/g, "")] = doc.spots[i];
             }
             
-            // NEW: Build a map of what 'Excel-mapped colors' look like in the Mockup (RGB)
             var mockupColorMap = {};
             try {
                 if (typeof mockupDoc !== 'undefined' && mockupDoc && mockupDoc.swatches) {
+                    var mapCount = 0;
+                    var officialKeys = []; for (var k in officialSpots) officialKeys.push(k);
+                    log("DEBUG: Official Spots in Excel: " + officialKeys.join(", "));
+                    
                     for (var j = 0; j < mockupDoc.swatches.length; j++) {
                         var sw = mockupDoc.swatches[j];
-                        var swName = sw.name.toLowerCase().replace(/[^a-z0-9]/g, "");
-                        if (officialSpots[swName]) {
-                            var scObj = (sw.typename === "Spot") ? sw.color : sw.color;
+                        var swCleanName = sw.name.replace(/^MOCK_/, "").toLowerCase().replace(/[^a-z0-9]/g, "").replace(/^mock/, "");
+                        if (officialSpots[swCleanName]) {
+                            var scObj = sw.color;
+                            if (scObj.typename === "SpotColor") scObj = scObj.spot.color;
                             if (scObj.typename === "RGBColor") {
-                                mockupColorMap[swName] = { r: Math.round(scObj.red), g: Math.round(scObj.green), b: Math.round(scObj.blue) };
+                                mockupColorMap[swCleanName] = { r: Math.round(scObj.red), g: Math.round(scObj.green), b: Math.round(scObj.blue) };
+                                mapCount++;
                             }
+                        } else {
+                            if (sw.name !== "[None]" && sw.name !== "[Registration]") log("   - No Excel match for Mockup Swatch: " + sw.name + " (Clean: " + swCleanName + ")");
                         }
                     }
+                    log("DEBUG: mockupColorMap populated with " + mapCount + " swatches.");
                 }
             } catch(eMap) { log("Color Map Warning: " + eMap.message); }
+
+            // --- NEW: Sync Mockup Swatches with Excel CMYK values and Force CMYK mode ---
+            try {
+                log("Syncing all swatches to CMYK mode...");
+                for (var s = 0; s < doc.swatches.length; s++) {
+                    var sw = doc.swatches[s];
+                    if (sw.name === "[None]" || sw.name === "[Registration]") continue;
+                    
+                    try {
+                        var swCleanName = sw.name.replace(/^MOCK_/, "").toLowerCase().replace(/[^a-z0-9]/g, "").replace(/^mock/, "");
+                        var targetSpot = officialSpots[swCleanName];
+                        
+                        if (sw.color.typename === "SpotColor") {
+                            var spot = sw.color.spot;
+                            if (targetSpot) {
+                                spot.color = targetSpot.color;
+                                log("   - Swatch Sync: Spot '" + sw.name + "' linked to Excel CMYK.");
+                            } else if (spot.color.typename === "RGBColor") {
+                                spot.color = rgbToCmyk(spot.color);
+                                log("   - Swatch Sync: Spot '" + sw.name + "' converted to CMYK.");
+                            }
+                        } else if (sw.color.typename === "RGBColor") {
+                            if (targetSpot) {
+                                sw.color = targetSpot.color;
+                                log("   - Swatch Sync: Swatch '" + sw.name + "' linked to Excel CMYK.");
+                            } else {
+                                sw.color = rgbToCmyk(sw.color);
+                                log("   - Swatch Sync: Swatch '" + sw.name + "' converted to CMYK.");
+                            }
+                        }
+                    } catch(e) { log("   - Swatch Sync Error (" + sw.name + "): " + e.message); }
+                }
+            } catch(eSync) { log("Swatch Sync Critical Error: " + eSync.message); }
 
             function deepReLink(container) {
                 var items = (container.pageItems) ? container.pageItems : [container];
                 for (var i = 0; i < items.length; i++) {
                     var it = items[i];
                     if (it.typename === "GroupItem") deepReLink(it);
-                    else if (it.typename === "PathItem" || it.typename === "CompoundPathItem" || it.typename === "TextFrame") {
+                    else if (it.typename === "CompoundPathItem") {
+                        // Compound paths can have fill/stroke themselves
+                        applySpot(it, "fillColor");
+                        applySpot(it, "strokeColor");
+                        // Also check internal paths just in case
+                        if (it.pathItems) {
+                            for (var p = 0; p < it.pathItems.length; p++) {
+                                applySpot(it.pathItems[p], "fillColor");
+                                applySpot(it.pathItems[p], "strokeColor");
+                            }
+                        }
+                    }
+                    else if (it.typename === "PathItem" || it.typename === "TextFrame") {
                         applySpot(it, "fillColor");
                         applySpot(it, "strokeColor");
                     }
@@ -545,95 +619,211 @@ function runAutomation() {
 
             function applySpot(obj, prop) {
                 try {
-                    var colorObj;
-                    if (obj.typename === "TextFrame") {
-                        if (prop === "fillColor") colorObj = obj.textRange.characterAttributes.fillColor;
-                        else if (prop === "strokeColor") colorObj = obj.textRange.characterAttributes.strokeColor;
+                    var colorObj = null;
+                    var isText = (obj.typename === "TextFrame");
+                    
+                    if (isText) {
+                        if (obj.textRange.length === 0) return;
+                        log("DEBUG TEXT: Checking '" + obj.contents + "' for " + prop);
+                        
+                        // Level 1: Character Attributes
+                        try { colorObj = obj.textRange.characterAttributes[prop]; } catch(e) {}
+                        
+                        // Level 2: First Character direct
+                        if (!colorObj || colorObj.typename === "NoColor") {
+                            try { colorObj = obj.textRange.characters[0].characterAttributes[prop]; if (colorObj && colorObj.typename !== "NoColor") log("   - Using Level 1 (First Character)"); } catch(e) {}
+                        }
+                        
+                        // Level 3: Frame Level
+                        if (!colorObj || colorObj.typename === "NoColor") {
+                            try { colorObj = obj[prop]; if (colorObj && colorObj.typename !== "NoColor") log("   - Using Level 2 (Frame Level)"); } catch(e) {}
+                        }
+                        
+                        // Level 4: Parent Group Level (Crucial for Group-applied colors)
+                        if (!colorObj || colorObj.typename === "NoColor") {
+                            var p = obj.parent;
+                            while (p && p.typename !== "Layer" && p.typename !== "Document") {
+                                try { 
+                                    colorObj = p[prop]; 
+                                    if (colorObj && colorObj.typename !== "NoColor") {
+                                        log("   - Using Level 3 (Parent Group: " + (p.name || "Unnamed") + ")");
+                                        break; 
+                                    }
+                                } catch(e) {}
+                                p = p.parent;
+                            }
+                        }
+
+                        // Level 5: Temporary Expand Check for Appearance-applied colors
+                        if (!colorObj || colorObj.typename === "NoColor") {
+                            var tempGroup = null;
+                            try {
+                                log("   - Attempting Level 5 (Temp Expand Appearance via Temp Group)...");
+                                var prevSel = [];
+                                for (var sIndex = 0; sIndex < doc.selection.length; sIndex++) {
+                                    prevSel.push(doc.selection[sIndex]);
+                                }
+                                
+                                // Create a temporary group to isolate the expansion
+                                tempGroup = doc.groupItems.add();
+                                var tempObj = obj.duplicate(tempGroup, ElementPlacement.PLACEATBEGINNING);
+                                
+                                doc.selection = null;
+                                tempGroup.selected = true;
+                                
+                                try {
+                                    app.executeMenuCommand("expandStyle");
+                                } catch(eExp) {
+                                    try { app.executeMenuCommand("Expand"); } catch(eExp2) {}
+                                }
+                                
+                                var foundColor = null;
+                                function extractColorFromItems(items) {
+                                    for (var k = 0; k < items.length; k++) {
+                                        var item = items[k];
+                                        if (item.typename === "PathItem") {
+                                            var c = item[prop];
+                                            if (c && c.typename !== "NoColor") {
+                                                foundColor = c;
+                                                return;
+                                            }
+                                        } else if (item.typename === "TextFrame") {
+                                            var c2 = item.textRange.characterAttributes[prop];
+                                            if (c2 && c2.typename !== "NoColor") {
+                                                foundColor = c2;
+                                                return;
+                                            }
+                                        } else if (item.typename === "GroupItem") {
+                                            extractColorFromItems(item.pageItems);
+                                            if (foundColor) return;
+                                        }
+                                    }
+                                }
+                                
+                                // Check the contents of the tempGroup (which now contains expanded items)
+                                extractColorFromItems(tempGroup.pageItems);
+                                
+                                doc.selection = null;
+                                for (var sIndex = 0; sIndex < prevSel.length; sIndex++) {
+                                    try { prevSel[sIndex].selected = true; } catch(e) {}
+                                }
+                                
+                                if (foundColor) {
+                                    colorObj = foundColor;
+                                    log("   - SUCCESS: Found color via Temp Expand! Type: " + colorObj.typename);
+                                }
+                            } catch(eTemp) {
+                                log("   - Temp Expand failed: " + eTemp.message);
+                            } finally {
+                                // Final safety cleanup: remove the entire temporary group
+                                try { if (tempGroup) tempGroup.remove(); } catch(e) {}
+                            }
+                        }
+                        
+                        if (colorObj) log("   - Effective Color Type: " + colorObj.typename);
+                        else log("   - CRITICAL: Color not found at any level for text.");
                     } else {
                         colorObj = obj[prop];
                     }
                     
-                    if (!colorObj) return;
+                    if (!colorObj || colorObj.typename === "NoColor") return;
 
-                    // Support for Nested Color processing (for Gradients)
                     function processSubColor(c) {
-                        if (!c) return null;
+                        if (!c || c.typename === "NoColor") return null;
                         
-                        // CASE 1: Direct Spot Swatch Match (Best Case)
                         if (c.typename === "SpotColor") {
                             var rawName = c.spot.name;
                             var cleanName = rawName.replace(/^MOCK_/, "").toLowerCase().replace(/[^a-z0-9]/g, "").replace(/^mock/, ""); 
-                            
-                            log("Checking Spot: '" + rawName + "' -> Cleaned: '" + cleanName + "'");
-                            
+                            if (isText) log("   - Spot Name: '" + rawName + "' (Clean: '" + cleanName + "')");
                             if (officialSpots[cleanName]) {
-                                var sc = new SpotColor(); 
-                                sc.spot = officialSpots[cleanName];
-                                log(">>> MATCH: Linked '" + rawName + "' to Excel Swatch '" + officialSpots[cleanName].name + "'");
+                                var sc = new SpotColor(); sc.spot = officialSpots[cleanName];
+                                if (isText) log("   - SUCCESS: Linked via Name Match!");
                                 return sc;
-                            } else {
-                                log("No match for '" + cleanName + "' in Excel spots.");
                             }
-                        }                         
-                        // CASE 2: Smart Excel/Mockup Linkage (Match by detected RGB values)
-                        else if (c.typename === "RGBColor") {
-                            var cr = Math.round(c.red), cg = Math.round(c.green), cb = Math.round(c.blue);
-                            
-                            // Check against all registered Excel colors found in mockup
-                            for (var mName in mockupColorMap) {
-                                var target = mockupColorMap[mName];
-                                if (Math.abs(cr - target.r) < 3 && Math.abs(cg - target.g) < 3 && Math.abs(cb - target.b) < 3) {
-                                    var sc2 = new SpotColor();
-                                    sc2.spot = officialSpots[mName];
-                                    log("Smart Link: Match found for '" + mName + "' using RGB sensing.");
-                                    return sc2;
-                                }
-                            }
+                        } 
+                        
+                        var rgb = [];
+                        try {
+                            if (c.typename === "RGBColor") {
+                                rgb = [c.red, c.green, c.blue];
+                            } else if (c.typename === "CMYKColor") {
+                                rgb = app.convertSampleColor(ImageColorSpace.CMYK, [c.cyan, c.magenta, c.yellow, c.black], ImageColorSpace.RGB, ColorConvertPurpose.defaultpurpose);
+                            } else if (c.typename === "GrayColor") {
+                                var g = 255 - (c.gray * 2.55);
+                                rgb = [g, g, g];
+                                if (isText) log("   - GrayColor detected (" + c.gray + "%), using RGB [" + Math.round(g) + "]");
+                            } else if (c.typename === "SpotColor" && c.spot.color.typename === "RGBColor") {
+                                rgb = [c.spot.color.red, c.spot.color.green, c.spot.color.blue];
+                            } else if (c.typename === "SpotColor" && c.spot.color.typename === "GrayColor") {
+                                var g2 = 255 - (c.spot.color.gray * 2.55);
+                                rgb = [g2, g2, g2];
+                            } else return null;
+                        } catch(e) { return null; }
 
-                            // Fallback to Base Color if it matches mockupSourceRGB
-                            if (mockupSourceRGB) {
-                                if (Math.abs(cr - mockupSourceRGB.r) < 3 && Math.abs(cg - mockupSourceRGB.g) < 3 && Math.abs(cb - mockupSourceRGB.b) < 3) {
-                                    var scBase = new SpotColor(); scBase.spot = doc.spots.getByName("base-color");
-                                    return scBase;
-                                }
+                        var cr = Math.round(rgb[0]), cg = Math.round(rgb[1]), cb = Math.round(rgb[2]);
+                        if (isText) log("   - RGB Detected: [" + cr + "," + cg + "," + cb + "]");
+
+                        var bestMatch = null, minDiff = 15;
+                        for (var mName in mockupColorMap) {
+                            var target = mockupColorMap[mName];
+                            var diff = Math.abs(cr - target.r) + Math.abs(cg - target.g) + Math.abs(cb - target.b);
+                            if (diff < minDiff) {
+                                minDiff = diff;
+                                bestMatch = mName;
                             }
                         }
-                        return null;
+
+                        if (bestMatch) {
+                            var sc2 = new SpotColor();
+                            sc2.spot = officialSpots[bestMatch];
+                            if (isText) log("   - SUCCESS: Linked via Smart Sense to '" + bestMatch + "' (Diff: " + minDiff + ")");
+                            return sc2;
+                        } else {
+                            if (isText) log("   - No Smart Sense match found for RGB [" + cr + "," + cg + "," + cb + "], using direct CMYK conversion.");
+                            var r = cr / 255, g = cg / 255, b = cb / 255;
+                            var k = 1 - Math.max(r, Math.max(g, b));
+                            var cmyk = new CMYKColor();
+                            if (k < 1) {
+                                cmyk.cyan = Math.round((1 - r - k) / (1 - k) * 100);
+                                cmyk.magenta = Math.round((1 - g - k) / (1 - k) * 100);
+                                cmyk.yellow = Math.round((1 - b - k) / (1 - k) * 100);
+                            } else { cmyk.cyan = 0; cmyk.magenta = 0; cmyk.yellow = 0; }
+                            cmyk.black = Math.round(k * 100);
+                            return cmyk;
+                        }
                     }
 
-                    // A: SOLID COLORS
                     var updated = processSubColor(colorObj);
                     if (updated) {
-                        if (obj.typename === "TextFrame") {
-                            if (prop === "fillColor") obj.textRange.characterAttributes.fillColor = updated;
-                            else if (prop === "strokeColor") obj.textRange.characterAttributes.strokeColor = updated;
+                        if (isText) {
+                            try {
+                                // Apply to character attributes directly.
+                                // We avoid setting obj.filled = false or clearAppearance here
+                                // because those commands often strip Warp/Arch effects from TextFrames.
+                                var ca = obj.textRange.characterAttributes;
+                                ca[prop] = updated;
+                                if (prop === "strokeColor") ca.strokeWeight = 2.5;
+                                log("   - SUCCESS: Applied linked color to text characters.");
+                            } catch(e) {
+                                try { obj[prop] = updated; } catch(e2) {}
+                            }
+                        } else {
+                            obj[prop] = updated;
+                            if (prop === "strokeColor") { obj.strokeWeight = obj.strokeWeight || 2; obj.stroked = true; }
                         }
-                        else obj[prop] = updated;
-                    }
-                    
-                    // B: GRADIENT COLORS (Deep Scan)
-                    else if (colorObj.typename === "GradientColor") {
+                    } else if (colorObj.typename === "GradientColor") {
                         var stops = colorObj.gradient.gradientStops;
                         for (var s = 0; s < stops.length; s++) {
                             var stopUpdated = processSubColor(stops[s].color);
                             if (stopUpdated) stops[s].color = stopUpdated;
                         }
+                    } else if (isText) {
+                        log("   - WARNING: No production match found for text color. It will remain in its original mockup color.");
                     }
-                } catch(e) {}
+                } catch(e) { log("ApplySpot Error: " + e.message); }
             }
-            
+                             
             deepReLink(targetContainer || doc);
-            
-            for (var d = doc.swatches.length - 1; d >= 0; d--) {
-                var dName = doc.swatches[d].name.toLowerCase().replace(/[^a-z0-9]/g, "");
-                var cName = dName.replace(/^mock/, "");
-                for (var key in officialSpots) {
-                    if (cName.indexOf(key) === 0 && dName !== key) {
-                        try { doc.swatches[d].remove(); } catch(e) {}
-                        break;
-                    }
-                }
-            }
         } catch (eMerge) { log("Merge Error: " + eMerge.message); }
     }
 
@@ -790,7 +980,6 @@ function runAutomation() {
     }
 
     function applyTextReplacements(container, replacements) {
-        log("DEBUG: Starting specific text replacements. Count: " + replacements.length);
         for (var i = 0; i < replacements.length; i++) {
             var rep = replacements[i];
             if (!rep.layer_name) continue;
@@ -798,15 +987,12 @@ function runAutomation() {
             var lName = rep.layer_name.toUpperCase();
             var targets = [lName];
             
-            // Smart Alising: Only add relevant aliases to avoid cross-over
             if (lName.indexOf("NAME") !== -1) {
                 targets.push("PLAYER NAME", "NAME_LAYER");
             } else if (lName.indexOf("NUMBER") !== -1 || lName === "NUM" || lName === "#") {
                 targets.push("NUMBER", "NUM", "#", "PLAYER NUMBER");
             }
 
-            log("DEBUG: Processing '" + lName + "' replacement with value: '" + rep.new_value + "'");
-            
             for (var t = 0; t < targets.length; t++) {
                 replaceInContainer(container, targets[t], rep.new_value, false);
             }
@@ -822,16 +1008,114 @@ function runAutomation() {
         if (container.textFrames && container.textFrames.length > 0) {
             for (var k = 0; k < container.textFrames.length; k++) {
                 var tf = container.textFrames[k];
+                if (tf.hidden) continue;
+
                 var tfName = (tf.name || "").toUpperCase();
                 var tfCont = (tf.contents || "").toUpperCase();
                 
-                log("DEBUG: Checking TextFrame - Name: '" + tf.name + "', Contents: '" + tf.contents + "'");
-
                 if (currentMatch || tfName.indexOf(tUpper) !== -1 || tfCont.indexOf(tUpper) !== -1) {
-                    log(">>> SUCCESS: Replacing '" + tf.contents + "' with '" + value + "' in '" + tf.name + "'");
+                    var savedFillSpotName   = null;
+                    var savedStrokeSpotName = null;
+                    var savedFillColor      = null; // Fallback raw color
+                    var savedStrokeColor     = null; // Fallback raw color
+                    var savedStrokeWeight   = null;
+                    var savedSize           = null;
+                    var savedFont           = null;
+
+                    try {
+                        if (tf.textRange.length > 0) {
+                            var charAttrs = tf.textRange.characters[0].characterAttributes;
+                            
+                            // 1. Check Character Level
+                            var fc = charAttrs.fillColor;
+                            var sc = charAttrs.strokeColor;
+                            
+                            // 2. Fallback to Frame Level if character is "NoColor"
+                            if (!fc || fc.typename === "NoColor") try { fc = tf.fillColor; } catch(e) {}
+                            if (!sc || sc.typename === "NoColor") try { sc = tf.strokeColor; } catch(e) {}
+                            
+                            // 3. Fallback to Parent Group Level (Appearance-applied colors often live here)
+                            var p = tf.parent;
+                            while ((!fc || fc.typename === "NoColor") && p && p.typename === "GroupItem") {
+                                try { fc = p.fillColor; } catch(e) {}
+                                p = p.parent;
+                            }
+                            p = tf.parent;
+                            while ((!sc || sc.typename === "NoColor") && p && p.typename === "GroupItem") {
+                                try { sc = p.strokeColor; } catch(e) {}
+                                p = p.parent;
+                            }
+
+                            if (fc && fc.typename !== "NoColor") {
+                                if (fc.typename === "SpotColor") savedFillSpotName = fc.spot.name;
+                                savedFillColor = fc;
+                            }
+                            if (sc && sc.typename !== "NoColor") {
+                                if (sc.typename === "SpotColor") savedStrokeSpotName = sc.spot.name;
+                                savedStrokeColor = sc;
+                            }
+
+                            try { savedStrokeWeight = charAttrs.strokeWeight || tf.strokeWeight; } catch(e) {}
+                            try { savedSize         = charAttrs.size; }        catch(e) {}
+                            try { savedFont         = charAttrs.textFont; }    catch(e) {}
+                        }
+                    } catch(eStyle) { log("STYLE SAVE ERROR: " + eStyle.message); }
+
                     tf.contents = value;
                     tf.zOrder(ZOrderMethod.BRINGTOFRONT);
                     tf.hidden = false;
+
+                    // Disable object-level fill/stroke to let character-level show through
+                    try { tf.filled = false; tf.stroked = false; } catch(eClear) {}
+
+                    try {
+                        var activeDoc = app.activeDocument;
+                        var rangeAttrs = tf.textRange.characterAttributes;
+
+                        // Re-apply Fill
+                        var finalFill = null;
+                        if (savedFillSpotName) {
+                            try {
+                                var spot = activeDoc.spots.getByName(savedFillSpotName);
+                                finalFill = new SpotColor(); finalFill.spot = spot;
+                            } catch(e) {}
+                        }
+                        if (!finalFill) finalFill = savedFillColor;
+
+                        if (finalFill && finalFill.typename !== "NoColor") {
+                            rangeAttrs.fillColor = finalFill;
+                            for (var ci = 0; ci < tf.textRange.characters.length; ci++) {
+                                tf.textRange.characters[ci].characterAttributes.fillColor = finalFill;
+                            }
+                        }
+
+                        // Re-apply Stroke
+                        var finalStroke = null;
+                        if (savedStrokeSpotName) {
+                            try {
+                                var spot = activeDoc.spots.getByName(savedStrokeSpotName);
+                                finalStroke = new SpotColor(); finalStroke.spot = spot;
+                            } catch(e) {}
+                        }
+                        if (!finalStroke) finalStroke = savedStrokeColor;
+
+                        if (finalStroke && finalStroke.typename !== "NoColor") {
+                            rangeAttrs.strokeColor = finalStroke;
+                            for (var ci = 0; ci < tf.textRange.characters.length; ci++) {
+                                tf.textRange.characters[ci].characterAttributes.strokeColor = finalStroke;
+                            }
+                            if (savedStrokeWeight) {
+                                rangeAttrs.strokeWeight = savedStrokeWeight;
+                                for (var ci = 0; ci < tf.textRange.characters.length; ci++) {
+                                    tf.textRange.characters[ci].characterAttributes.strokeWeight = savedStrokeWeight;
+                                }
+                            }
+                        }
+
+                        if (savedSize) rangeAttrs.size = savedSize;
+                        if (savedFont) rangeAttrs.textFont = savedFont;
+
+                    } catch(eReapply) { log("STYLE RE-APPLY ERROR: " + eReapply.message); }
                 }
             }
         }
@@ -869,17 +1153,19 @@ function runAutomation() {
             function recurse(items) {
                 for (var i = 0; i < items.length; i++) {
                     var it = items[i];
+                    // SKIP TextFrames entirely! Their strokes are handled by replaceInContainer
+                    if (it.typename === "TextFrame") continue;
+
                     if (it.typename === "PathItem") {
-                        // Only clear the stroke if it's NOT a spot color (which we just linked)
-                        // This protects intentional design strokes like outlines on text-shapes
                         var isSpot = false;
                         try {
                             if (it.stroked && it.strokeColor && it.strokeColor.typename === "SpotColor") isSpot = true;
                         } catch(e) {}
-                        
+                        // Only remove if it's NOT a spot color
                         if (!isSpot) it.stroked = false;
                     } 
                     else if (it.typename === "GroupItem") recurse(it.pageItems);
+                    else if (it.typename === "CompoundPathItem") recurse(it.pathItems);
                 }
             }
             recurse(container.pageItems || [container]);
@@ -891,6 +1177,7 @@ function runAutomation() {
             function recurse(items) {
                 for (var i = items.length - 1; i >= 0; i--) {
                     var it = items[i];
+                    if (it.hidden) continue;
                     if (((it.name || "").toLowerCase().indexOf("logo") !== -1) || (it.typename === "TextFrame")) { try { it.zOrder(ZOrderMethod.BRINGTOFRONT); } catch(e) {} }
                     if (it.typename === "GroupItem") recurse(it.pageItems);
                 }
@@ -919,16 +1206,6 @@ function runAutomation() {
         } catch (e3) {}
     }
 
-    function collectAndDuplicateDesign(baseItem, targetDoc) {
-        var group = targetDoc.groupItems.add(); group.name = "Captured_Design";
-        try {
-            if (baseItem.typename === "Layer") {
-                for (var l = baseItem.pageItems.length - 1; l >= 0; l--) { if (!baseItem.pageItems[l].hidden && !baseItem.pageItems[l].locked) try { baseItem.pageItems[l].duplicate(group, ElementPlacement.PLACEATBEGINNING); } catch (e) {} }
-            } else try { baseItem.duplicate(group, ElementPlacement.PLACEATBEGINNING); } catch (e2) {}
-        } catch (e) {}
-        return group;
-    }
-    
     function forceCmykRecursive(item) {
         if (!item) return;
         try {
@@ -938,6 +1215,8 @@ function runAutomation() {
                 if (item.filled) item.fillColor = anyToCmyk(item.fillColor);
                 if (item.stroked) item.strokeColor = anyToCmyk(item.strokeColor);
             } else if (item.typename === "TextFrame") {
+                try { item.filled = false; } catch(e) {}
+                try { item.stroked = false; } catch(e) {}
                 item.textRange.characterAttributes.fillColor = anyToCmyk(item.textRange.characterAttributes.fillColor);
             }
         } catch (e) {}
@@ -945,9 +1224,7 @@ function runAutomation() {
 
     function anyToCmyk(color) {
         if (color.typename === "RGBColor") return rgbToCmyk(color);
-        if (color.typename === "SpotColor" && color.color.typename === "RGBColor") {
-            color.color = rgbToCmyk(color.color);
-        }
+        if (color.typename === "SpotColor" && color.color.typename === "RGBColor") { color.color = rgbToCmyk(color.color); }
         return color;
     }
 
@@ -959,19 +1236,14 @@ function runAutomation() {
             cmyk.cyan = Math.round((1 - r - k) / (1 - k) * 100);
             cmyk.magenta = Math.round((1 - g - k) / (1 - k) * 100);
             cmyk.yellow = Math.round((1 - b - k) / (1 - k) * 100);
-        } else {
-            cmyk.cyan = 0; cmyk.magenta = 0; cmyk.yellow = 0;
-        }
+        } else { cmyk.cyan = 0; cmyk.magenta = 0; cmyk.yellow = 0; }
         cmyk.black = Math.round(k * 100);
         return cmyk;
     }
 
     function isAccessory(p) { var n = p.toLowerCase(); return n.indexOf("twill") !== -1 || n.indexOf("tukdi") !== -1 || n.indexOf("tape") !== -1; }
     function getFriendlySize(s) { 
-        var m = { 
-            "XS": "XS", "S": "Small", "M": "Medium", "L": "Large", "XL": "XL", 
-            "XXL": "2XL", "2XL": "2XL", "3XL": "3XL", "XXXL": "3XL", "4XL": "4XL", "XXXXL": "4XL" 
-        }; 
+        var m = { "XS": "XS", "S": "Small", "M": "Medium", "L": "Large", "XL": "XL", "XXL": "2XL", "2XL": "2XL", "3XL": "3XL", "XXXL": "3XL", "4XL": "4XL", "XXXXL": "4XL" }; 
         return m[s.toUpperCase()] || s; 
     }
 }

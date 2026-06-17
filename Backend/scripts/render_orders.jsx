@@ -34,6 +34,25 @@ function main() {
         }
     }
 
+    // --- NEW: Force all existing swatches to CMYK mode ---
+    try {
+        for (var s = 0; s < doc.swatches.length; s++) {
+            var sw = doc.swatches[s];
+            if (sw.name === "[None]" || sw.name === "[Registration]") continue;
+            try {
+                var c = sw.color;
+                if (c.typename === "SpotColor") {
+                    var spot = c.spot;
+                    if (spot.color.typename === "RGBColor") {
+                        spot.color = rgbToCmyk(spot.color);
+                    }
+                } else if (c.typename === "RGBColor") {
+                    sw.color = rgbToCmyk(c);
+                }
+            } catch (e) {}
+        }
+    } catch (e) {}
+
     var outputFolder = Folder.selectDialog("Select output folder for Assets");
     if (!outputFolder) return;
 
@@ -93,18 +112,22 @@ function replaceTextOnArtboard(doc, abIndex, targetName, newValue) {
 function updateSwatchToCMYK(doc, name, cmyk) {
     try {
         var targetName = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+        var s = null;
         
-        // Delete existing to avoid RGB residue or naming conflicts
-        for (var i = doc.swatches.length - 1; i >= 0; i--) {
-            var sName = doc.swatches[i].name.toLowerCase().replace(/[^a-z0-9]/g, "");
-            if (sName === targetName) {
-                doc.swatches[i].remove();
+        // Find existing spot
+        for (var i = 0; i < doc.spots.length; i++) {
+            if (doc.spots[i].name.toLowerCase().replace(/[^a-z0-9]/g, "") === targetName) {
+                s = doc.spots[i];
+                break;
             }
         }
 
-        var s = doc.swatches.add();
-        s.name = name;
-        
+        if (!s) {
+            s = doc.spots.add();
+            s.name = name;
+        }
+
+        s.colorType = ColorModel.SPOT;
         var newColor = new CMYKColor();
         newColor.cyan = Math.round(parseFloat(cmyk.c) * 100) / 100;
         newColor.magenta = Math.round(parseFloat(cmyk.m) * 100) / 100;
@@ -122,6 +145,19 @@ function exportActiveArtboardToJpeg(doc, file) {
     exportOptions.artBoardClipping = true;
     exportOptions.imageColorSpace = ImageColorSpace.CMYK; // FORCED CMYK EXPORT
     doc.exportFile(file, ExportType.JPEG, exportOptions);
+}
+
+function rgbToCmyk(rgb) {
+    var r = rgb.red / 255, g = rgb.green / 255, b = rgb.blue / 255;
+    var k = 1 - Math.max(r, Math.max(g, b));
+    var cmyk = new CMYKColor();
+    if (k < 1) {
+        cmyk.cyan = Math.round((1 - r - k) / (1 - k) * 100);
+        cmyk.magenta = Math.round((1 - g - k) / (1 - k) * 100);
+        cmyk.yellow = Math.round((1 - b - k) / (1 - k) * 100);
+    } else { cmyk.cyan = 0; cmyk.magenta = 0; cmyk.yellow = 0; }
+    cmyk.black = Math.round(k * 100);
+    return cmyk;
 }
 
 main();
