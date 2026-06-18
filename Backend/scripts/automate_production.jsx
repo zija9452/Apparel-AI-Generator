@@ -850,6 +850,43 @@ function runAutomation() {
             }
                              
             deepReLink(targetContainer || doc);
+
+            // --- NEW: Remove MOCK_ prefixed swatches from the Order document after relinking ---
+            log("Post-merge: Cleaning up MOCK_ prefixed swatches from Order document...");
+            var removedCount = 0;
+            for (var i = doc.swatches.length - 1; i >= 0; i--) { // Iterate backwards for safe removal
+                var sw = doc.swatches[i];
+                if (sw.name !== "[None]" && sw.name !== "[Registration]" && sw.name.indexOf("MOCK_") === 0) {
+                    try {
+                        var cleanName = sw.name.replace(/^MOCK_/, "").toLowerCase().replace(/[^a-z0-9]/g, "").replace(/^mock/, "");
+                        var targetSpot = null;
+                        
+                        // Find the corresponding official spot in the order document
+                        for (var k = 0; k < doc.spots.length; k++) {
+                            if (doc.spots[k].name.toLowerCase().replace(/[^a-z0-9]/g, "") === cleanName) {
+                                targetSpot = doc.spots[k];
+                                break;
+                            }
+                        }
+
+                        if (targetSpot) {
+                            // Merge the MOCK_ swatch into its non-MOCK counterpart
+                            sw.remove(targetSpot);
+                            log("   - Merged MOCK_ swatch '" + sw.name + "' into '" + targetSpot.name + "'.");
+                            removedCount++;
+                        } else {
+                            // If no target spot found, just remove it. deepReLink should have handled usage.
+                            sw.remove();
+                            log("   - Removed orphaned MOCK_ swatch: " + sw.name);
+                            removedCount++;
+                        }
+                    } catch(e) {
+                        log("   - Error processing MOCK_ swatch " + sw.name + ": " + e.message);
+                    }
+                }
+            }
+            log("Completed MOCK_ swatch cleanup. Total removed/merged: " + removedCount);
+
         } catch (eMerge) { log("Merge Error: " + eMerge.message); }
     }
 
