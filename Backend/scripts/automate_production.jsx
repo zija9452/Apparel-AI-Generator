@@ -1031,11 +1031,16 @@ function runAutomation() {
                         // because it points to the old document's spot.
                         if (!finalFill && savedFillColor) {
                             if (savedFillColor.typename === "SpotColor") {
-                                // Try to find the spot again, or just use the color definition
-                                try {
-                                    finalFill = activeDoc.spots.getByName(savedFillSpotName).color;
-                                } catch(e) {
-                                    finalFill = savedFillColor.spot.color; // Use the color definition
+                                // Force conversion to CMYKColor to break the link to the old spot
+                                var c = savedFillColor.spot.color;
+                                if (c.typename === "SpotColor") c = c.spot.color; // Handle spot-on-spot
+                                
+                                if (c.typename === "RGBColor") {
+                                    finalFill = rgbToCmyk(c);
+                                } else if (c.typename === "CMYKColor") {
+                                    finalFill = c;
+                                } else {
+                                    finalFill = c; // Fallback
                                 }
                             } else {
                                 finalFill = savedFillColor;
@@ -1061,10 +1066,15 @@ function runAutomation() {
                         // FIX: Do not use savedStrokeColor directly if it's a SpotColor
                         if (!finalStroke && savedStrokeColor) {
                             if (savedStrokeColor.typename === "SpotColor") {
-                                try {
-                                    finalStroke = activeDoc.spots.getByName(savedStrokeSpotName).color;
-                                } catch(e) {
-                                    finalStroke = savedStrokeColor.spot.color;
+                                var c = savedStrokeColor.spot.color;
+                                if (c.typename === "SpotColor") c = c.spot.color;
+                                
+                                if (c.typename === "RGBColor") {
+                                    finalStroke = rgbToCmyk(c);
+                                } else if (c.typename === "CMYKColor") {
+                                    finalStroke = c;
+                                } else {
+                                    finalStroke = c;
                                 }
                             } else {
                                 finalStroke = savedStrokeColor;
