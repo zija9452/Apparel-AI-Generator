@@ -9,9 +9,6 @@ function runAutomation() {
 
         var patternDoc = app.activeDocument;
         
-        // Ensure alerts are suppressed globally
-        app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS;
-        
         function updateStatus(msg, prog, isReady) {
             if (typeof jobDir !== 'undefined') {
                 var statusFile = new File(jobDir + "/status.json");
@@ -33,38 +30,15 @@ function runAutomation() {
 
         // --- NEW: Mockup Swatch Isolation (Name-only) ---
         try {
-            // 1. Rename ALL swatches AND spots in the mockup to prevent naming collisions
-            // We also force them to CMYK here so they match the Order Doc definition (avoids "Conflict" popups)
-            
-            // Rename Spots first
-            for (var sp = mockupDoc.spots.length - 1; sp >= 0; sp--) {
-                var spot = mockupDoc.spots[sp];
-                if (spot.name !== "[Registration]" && spot.name.indexOf("MOCK_") !== 0) {
-                    try { 
-                        // Force CMYK mode on the spot itself
-                        if (spot.color.typename === "RGBColor") {
-                            spot.color = rgbToCmyk(spot.color);
-                        }
-                        spot.name = "MOCK_" + spot.name; 
-                    } catch(e) {}
-                }
-            }
-
+            // 1. Rename ALL swatches in the mockup to prevent naming collisions
+            // We keep them as SPOT colors so we can still track them by name for relinking.
             for (var s = mockupDoc.swatches.length - 1; s >= 0; s--) {
                 var sw = mockupDoc.swatches[s];
                 if (sw.name !== "[None]" && sw.name !== "[Registration]" && sw.name.indexOf("MOCK_") !== 0) {
-                    try { 
-                        // Force CMYK mode on the swatch
-                        if (sw.color.typename === "RGBColor") {
-                            sw.color = rgbToCmyk(sw.color);
-                        } else if (sw.color.typename === "SpotColor" && sw.color.spot.color.typename === "RGBColor") {
-                            sw.color.spot.color = rgbToCmyk(sw.color.spot.color);
-                        }
-                        sw.name = "MOCK_" + sw.name; 
-                    } catch(e) {}
+                    try { sw.name = "MOCK_" + sw.name; } catch(e) {}
                 }
             }
-            log("All Mockup swatches/spots isolated with 'MOCK_' prefix and converted to CMYK.");
+            log("All Mockup swatches isolated with 'MOCK_' prefix (Spot identity preserved).");
         } catch(e) { log("Isolation Warning: " + e.message); }
 
         var refContext = { spacing: 500 };
@@ -92,6 +66,8 @@ function runAutomation() {
             }
         }
         log("Swatch panel cleared of default colors.");
+
+        app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS;
 
         // 1. PRE-FLIGHT COLOR DETECTION (Smart Swatch & Object Lookup)
         var mockupSourceRGB = null; 
@@ -277,13 +253,12 @@ function runAutomation() {
                                         if (pastedDesign) {
                                             log("Design pasted into Order doc. Starting alignment/cleanup.");
                                             mergeAndCleanupSwatches(orderDoc, pastedDesign);
-                                            
-                                            // --- NEW: Programmatically merge duplicates to avoid popup ---
-                                            mergeDuplicateSwatches(orderDoc);
-                                            
                                             if (pastedDesign.typename !== "GroupItem") {
                                                 var wrapper = orderDoc.groupItems.add(); pastedDesign.moveToBeginning(wrapper); pastedDesign = wrapper;
                                             }
+                                            
+                                            // log("Checking for 'Loose Logos' that might overlap with this part in Mockup...");
+                                            // attachLooseLogos(sourceDesign, pastedDesign);
                                             
                                             if (isSleeve) {
                                                 log("Sleeve detected. Rotating design -73 degrees for alignment.");
@@ -507,44 +482,10 @@ function runAutomation() {
     }
 
     // --- HELPER FUNCTIONS ---
-    function mergeDuplicateSwatches(doc) {
-        try {
-            var swatches = doc.swatches;
-            var masterSwatches = {}; // Name -> Swatch object
-            
-            // First pass: Identify master swatches
-            for (var i = 0; i < swatches.length; i++) {
-                var sw = swatches[i];
-                if (sw.name === "[None]" || sw.name === "[Registration]") continue;
-                if (!masterSwatches[sw.name]) {
-                    masterSwatches[sw.name] = sw;
-                }
-            }
-
-            // Second pass: Find duplicates and merge
-            for (var i = swatches.length - 1; i >= 0; i--) {
-                var sw = swatches[i];
-                if (sw.name === "[None]" || sw.name === "[Registration]") continue;
-                
-                var master = masterSwatches[sw.name];
-                if (sw !== master) {
-                    // This is a duplicate. Replace usages and remove.
-                    try {
-                        sw.remove(master);
-                        log("Merged duplicate swatch: " + sw.name);
-                    } catch(e) {
-                        log("Merge error for " + sw.name + ": " + e.message);
-                    }
-                }
-            }
-        } catch(e) { log("Error in mergeDuplicateSwatches: " + e.message); }
-    }
-
     function updateSwatchToCMYK(doc, name, cmyk) {
         try {
             var targetName = name.toLowerCase().replace(/[^a-z0-9]/g, "");
             var s = null;
-            // Check if swatch already exists to avoid duplicates
             for (var i = 0; i < doc.spots.length; i++) {
                 if (doc.spots[i].name.toLowerCase().replace(/[^a-z0-9]/g, "") === targetName) {
                     s = doc.spots[i]; break;
@@ -597,39 +538,6 @@ function runAutomation() {
                     log("DEBUG: mockupColorMap populated with " + mapCount + " swatches.");
                 }
             } catch(eMap) { log("Color Map Warning: " + eMap.message); }
-
-            // --- NEW: Sync Mockup Swatches with Excel CMYK values and Force CMYK mode ---
-            try {
-                log("Syncing all swatches to CMYK mode...");
-                for (var s = 0; s < doc.swatches.length; s++) {
-                    var sw = doc.swatches[s];
-                    if (sw.name === "[None]" || sw.name === "[Registration]") continue;
-                    
-                    try {
-                        var swCleanName = sw.name.replace(/^MOCK_/, "").toLowerCase().replace(/[^a-z0-9]/g, "").replace(/^mock/, "");
-                        var targetSpot = officialSpots[swCleanName];
-                        
-                        if (sw.color.typename === "SpotColor") {
-                            var spot = sw.color.spot;
-                            if (targetSpot) {
-                                spot.color = targetSpot.color;
-                                log("   - Swatch Sync: Spot '" + sw.name + "' linked to Excel CMYK.");
-                            } else if (spot.color.typename === "RGBColor") {
-                                spot.color = rgbToCmyk(spot.color);
-                                log("   - Swatch Sync: Spot '" + sw.name + "' converted to CMYK.");
-                            }
-                        } else if (sw.color.typename === "RGBColor") {
-                            if (targetSpot) {
-                                sw.color = targetSpot.color;
-                                log("   - Swatch Sync: Swatch '" + sw.name + "' linked to Excel CMYK.");
-                            } else {
-                                sw.color = rgbToCmyk(sw.color);
-                                log("   - Swatch Sync: Swatch '" + sw.name + "' converted to CMYK.");
-                            }
-                        }
-                    } catch(e) { log("   - Swatch Sync Error (" + sw.name + "): " + e.message); }
-                }
-            } catch(eSync) { log("Swatch Sync Critical Error: " + eSync.message); }
 
             function deepReLink(container) {
                 var items = (container.pageItems) ? container.pageItems : [container];
@@ -769,10 +677,10 @@ function runAutomation() {
                     function processSubColor(c) {
                         if (!c || c.typename === "NoColor") return null;
                         
-                        // PRIORITY: Check if this color is already an official spot
                         if (c.typename === "SpotColor") {
                             var rawName = c.spot.name;
                             var cleanName = rawName.replace(/^MOCK_/, "").toLowerCase().replace(/[^a-z0-9]/g, "").replace(/^mock/, ""); 
+                            if (isText) log("   - Spot Name: '" + rawName + "' (Clean: '" + cleanName + "')");
                             if (officialSpots[cleanName]) {
                                 var sc = new SpotColor(); sc.spot = officialSpots[cleanName];
                                 if (isText) log("   - SUCCESS: Linked via Name Match!");
@@ -1208,6 +1116,40 @@ function runAutomation() {
             }
             recurse(container.pageItems || [container]);
         } catch (e) {}
+    }
+
+    function bringLogosToFront(container) {
+        try {
+            function recurse(items) {
+                for (var i = items.length - 1; i >= 0; i--) {
+                    var it = items[i];
+                    if (it.hidden) continue;
+                    if (((it.name || "").toLowerCase().indexOf("logo") !== -1) || (it.typename === "TextFrame")) { try { it.zOrder(ZOrderMethod.BRINGTOFRONT); } catch(e) {} }
+                    if (it.typename === "GroupItem") recurse(it.pageItems);
+                }
+            }
+            recurse(container.pageItems || [container]);
+        } catch (e) {}
+    }
+
+    function rectsIntersect(r1, r2) { return !(r2[0] > r1[2] || r2[2] < r1[0] || r2[1] < r1[3] || r2[3] > r1[1]); }
+
+    function attachLooseLogos(sourceItem, targetGroup) {
+        try {
+            if (!sourceItem || !targetGroup) return;
+            var baseBounds; try { baseBounds = sourceItem.visibleBounds; } catch (e) { return; }
+            var searchLayer = sourceItem; while (searchLayer.parent && searchLayer.parent.typename !== "Document") { searchLayer = searchLayer.parent; }
+            function checkRecursive(container) {
+                if (!container.pageItems || container.pageItems.length === 0) return;
+                for (var i = container.pageItems.length - 1; i >= 0; i--) {
+                    var item = container.pageItems[i];
+                    if (item === sourceItem || item.hidden || item.locked || item.typename === "Guide") continue;
+                    try { if (rectsIntersect(baseBounds, item.visibleBounds)) { if (item.typename === "GroupItem" && (!item.name || item.pageItems.length > 5)) checkRecursive(item); else item.duplicate(targetGroup, ElementPlacement.PLACEATBEGINNING); } } catch (e) {}
+                }
+            }
+            if (searchLayer.typename === "Layer") checkRecursive(searchLayer);
+            else { var p = sourceItem.parent; if (p && p.pageItems) checkRecursive(p); }
+        } catch (e3) {}
     }
 
     function forceCmykRecursive(item) {
