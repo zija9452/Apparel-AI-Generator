@@ -482,19 +482,15 @@ function runAutomation() {
     }
 
     // --- HELPER FUNCTIONS ---
-    function getSpotByName(doc, name) {
-        var cleanName = name.toLowerCase().replace(/[^a-z0-9]/g, "");
-        for (var i = 0; i < doc.spots.length; i++) {
-            if (doc.spots[i].name.toLowerCase().replace(/[^a-z0-9]/g, "") === cleanName) {
-                return doc.spots[i];
-            }
-        }
-        return null;
-    }
-
     function updateSwatchToCMYK(doc, name, cmyk) {
         try {
-            var s = getSpotByName(doc, name);
+            var targetName = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+            var s = null;
+            for (var i = 0; i < doc.spots.length; i++) {
+                if (doc.spots[i].name.toLowerCase().replace(/[^a-z0-9]/g, "") === targetName) {
+                    s = doc.spots[i]; break;
+                }
+            }
             if (!s) {
                 s = doc.spots.add();
                 s.name = name;
@@ -1026,15 +1022,9 @@ function runAutomation() {
                         var finalFill = null;
                         if (savedFillSpotName) {
                             try {
-                                // FIX: Strip MOCK_ prefix before looking for the spot in the active document
-                                var cleanName = savedFillSpotName.replace(/^MOCK_/i, "");
-                                finalFill = new SpotColor();
-                                finalFill.spot = getSpotByName(activeDoc, cleanName);
-                                if (!finalFill.spot) throw new Error("Not found");
-                                log("   - Re-mapped Number color from " + savedFillSpotName + " to " + cleanName);
-                            } catch(e) {
-                                finalFill = savedFillColor;
-                            }
+                                var spot = activeDoc.spots.getByName(savedFillSpotName);
+                                finalFill = new SpotColor(); finalFill.spot = spot;
+                            } catch(e) {}
                         }
                         if (!finalFill) finalFill = savedFillColor;
 
@@ -1049,15 +1039,9 @@ function runAutomation() {
                         var finalStroke = null;
                         if (savedStrokeSpotName) {
                             try {
-                                // FIX: Strip MOCK_ prefix before looking for the spot in the active document
-                                var cleanName = savedStrokeSpotName.replace(/^MOCK_/i, "");
-                                finalStroke = new SpotColor();
-                                finalStroke.spot = getSpotByName(activeDoc, cleanName);
-                                if (!finalStroke.spot) throw new Error("Not found");
-                                log("   - Re-mapped Number stroke from " + savedStrokeSpotName + " to " + cleanName);
-                            } catch(e) {
-                                finalStroke = savedStrokeColor;
-                            }
+                                var spot = activeDoc.spots.getByName(savedStrokeSpotName);
+                                finalStroke = new SpotColor(); finalStroke.spot = spot;
+                            } catch(e) {}
                         }
                         if (!finalStroke) finalStroke = savedStrokeColor;
 
