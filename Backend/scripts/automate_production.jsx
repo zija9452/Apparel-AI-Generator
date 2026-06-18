@@ -993,11 +993,11 @@ function runAutomation() {
                             }
 
                             if (fc && fc.typename !== "NoColor") {
-                                if (fc.typename === "SpotColor") savedFillSpotName = fc.spot.name;
+                                if (fc.typename === "SpotColor") savedFillSpotName = fc.spot.name.replace(/^MOCK_/, "");
                                 savedFillColor = fc;
                             }
                             if (sc && sc.typename !== "NoColor") {
-                                if (sc.typename === "SpotColor") savedStrokeSpotName = sc.spot.name;
+                                if (sc.typename === "SpotColor") savedStrokeSpotName = sc.spot.name.replace(/^MOCK_/, "");
                                 savedStrokeColor = sc;
                             }
 
