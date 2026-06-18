@@ -82,31 +82,40 @@ function runAutomation() {
         var orderDoc = app.documents.add(DocumentColorSpace.CMYK); 
         log("New Order document created (CMYK)");
 
-        // 0. CLEAN SLATE: Delete all default swatches to avoid confusion
+        // 0. CLEAN SLATE: Delete all default swatches and any pre-existing 'base-color' to avoid confusion
         for (var i = orderDoc.swatches.length - 1; i >= 0; i--) {
             var s = orderDoc.swatches[i];
-            if (s.name !== "[None]" && s.name !== "[Registration]") {
+            // Explicitly remove "base-color" if it exists as a process color
+            if (s.name.toLowerCase() === "base-color" && s.color.typename !== "SpotColor") {
+                try { s.remove(); log("Removed pre-existing process swatch 'base-color'."); } catch(e) { log("Error removing process 'base-color': " + e.message); }
+            } else if (s.name !== "[None]" && s.name !== "[Registration]") {
                 try { s.remove(); } catch(e) {}
             }
         }
-        log("Swatch panel cleared of default colors.");
+        // Also ensure no spot color "base-color" exists if we are recreating it
+        for (var i = orderDoc.spots.length - 1; i >= 0; i--) {
+            if (orderDoc.spots[i].name.toLowerCase() === "base-color") {
+                try { orderDoc.spots[i].remove(); log("Removed pre-existing spot 'base-color'."); } catch(e) { log("Error removing spot 'base-color': " + e.message); }
+            }
+        }
+        log("Swatch panel cleared of default colors and any pre-existing 'base-color'.");
 
         // 1. PRE-FLIGHT COLOR DETECTION (Smart Swatch & Object Lookup)
         var mockupSourceRGB = null; 
-        try {
-            var detected = { c: 0, m: 0, y: 0, k: 0 };
-            var colorFound = false;
+        var detectedCMYK = { c: 0, m: 0, y: 0, k: 0 }; // Renamed from 'detected' to avoid confusion
+        var colorFound = false;
 
-            // Strategy A: Direct Swatch Lookup
+        try {
+            // Strategy A: Direct Swatch Lookup (Mockup document)
             try {
                 var mockupSwatch = mockupDoc.swatches.getByName("base-color");
                 if (mockupSwatch) {
-                    var sc = (mockupSwatch.typename === "Spot") ? mockupSwatch.color : mockupSwatch.color;
+                    var sc = (mockupSwatch.color.typename === "SpotColor") ? mockupSwatch.color.spot.color : mockupSwatch.color;
                     if (sc.typename === "RGBColor") {
                         mockupSourceRGB = { r: Math.round(sc.red), g: Math.round(sc.green), b: Math.round(sc.blue) };
-                        detected = rgbToCmyk(sc);
+                        detectedCMYK = rgbToCmyk(sc);
                     } else if (sc.typename === "CMYKColor") {
-                        detected = { c: sc.cyan, m: sc.magenta, y: sc.yellow, k: sc.black };
+                        detectedCMYK = { c: sc.cyan, m: sc.magenta, y: sc.yellow, k: sc.black };
                     }
                     colorFound = true;
                     log("Base color detected directly from Mockup Swatch panel.");
@@ -131,7 +140,12 @@ function runAutomation() {
                 }
             }
             
-            if (colorFound) updateSwatchToCMYK(orderDoc, "base-color", detected);
+            if (colorFound) {
+                updateSwatchToCMYK(orderDoc, "base-color", detectedCMYK);
+            } else {
+                log("No base color detected from mockup. Defaulting to CMYK (0,0,0,0) as spot color.");
+                updateSwatchToCMYK(orderDoc, "base-color", { c: 0, m: 0, y: 0, k: 0 }); // Ensure it's always a spot
+            }
             if (mockupSourceRGB) log("Mockup Source RGB Captured: R:" + mockupSourceRGB.r + " G:" + mockupSourceRGB.g + " B:" + mockupSourceRGB.b);
 
         } catch (ePre) { log("Pre-flight color detection failed: " + ePre.message); }
@@ -150,14 +164,23 @@ function runAutomation() {
             }
         }
 
-        // 3. CAPTURE FINAL BASE COLOR REFERENCE
+        // 3. CAPTURE FINAL BASE COLOR REFERENCE (ALWAYS as a SpotColor from the spots collection)
         var finalBaseColor = null;
         try {
-            finalBaseColor = orderDoc.swatches.getByName("base-color").color;
-            log("Global base color linked to swatch.");
+            var baseSpot = orderDoc.spots.getByName("base-color");
+            finalBaseColor = baseSpot.color; // Get the SpotColor object
+            log("Global base color linked to spot swatch: '" + baseSpot.name + "'.");
         } catch (eFinal) { 
-            if (orderDoc.swatches.length > 0) finalBaseColor = orderDoc.swatches[0].color;
-            log("WARNING: base-color swatch not found, using first available.");
+            log("CRITICAL ERROR: 'base-color' spot swatch not found after setup: " + eFinal.message);
+            // Fallback, though this should ideally not be hit if updateSwatchToCMYK always works
+            if (orderDoc.swatches.length > 0) {
+                finalBaseColor = orderDoc.swatches[0].color;
+                log("WARNING: Using first available swatch as fallback for finalBaseColor.");
+            } else {
+                var fallbackCMYK = new CMYKColor(); fallbackCMYK.cyan=0; fallbackCMYK.magenta=0; fallbackCMYK.yellow=0; fallbackCMYK.black=0;
+                finalBaseColor = fallbackCMYK;
+                log("WARNING: No swatches available, using black CMYK as fallback.");
+            }
         }
 
         var margin = 500, currentX = -7500, currentY = 8000, artboardCount = 0, rowMaxHeight = 0;
