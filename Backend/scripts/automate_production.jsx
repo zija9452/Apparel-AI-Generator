@@ -79,26 +79,28 @@ function runAutomation() {
         }
 
         updateStatus("Creating new Order file...", 45, false);
-        var orderDoc = app.documents.add(DocumentColorSpace.CMYK); 
+        var orderDoc = app.documents.add(DocumentColorSpace.CMYK);
         log("New Order document created (CMYK)");
 
-        // 0. CLEAN SLATE: Delete all default swatches and any pre-existing 'base-color' to avoid confusion
+        // 0. CLEAN SLATE: Delete all default swatches and any pre-existing 'base-color' or 'MOCK_base-color' to avoid confusion
         for (var i = orderDoc.swatches.length - 1; i >= 0; i--) {
             var s = orderDoc.swatches[i];
-            // Explicitly remove "base-color" if it exists as a process color
-            if (s.name.toLowerCase() === "base-color" && s.color.typename !== "SpotColor") {
-                try { s.remove(); log("Removed pre-existing process swatch 'base-color'."); } catch(e) { log("Error removing process 'base-color': " + e.message); }
+            var sNameLower = s.name.toLowerCase();
+            // Explicitly remove "base-color" or "MOCK_base-color" if they exist
+            if (sNameLower === "base-color" || sNameLower === "mock_base-color") {
+                try { s.remove(); log("Removed pre-existing swatch '" + s.name + "'."); } catch(e) { log("Error removing swatch '" + s.name + "': " + e.message); }
             } else if (s.name !== "[None]" && s.name !== "[Registration]") {
                 try { s.remove(); } catch(e) {}
             }
         }
-        // Also ensure no spot color "base-color" exists if we are recreating it
-        for (var i = orderDoc.spots.length - 1; i >= 0; i--) {
-            if (orderDoc.spots[i].name.toLowerCase() === "base-color") {
-                try { orderDoc.spots[i].remove(); log("Removed pre-existing spot 'base-color'."); } catch(e) { log("Error removing spot 'base-color': " + e.message); }
+        // Also ensure no spot color "base-color" or "MOCK_base-color" exists if we are recreating it
+        for (var i = orderDoc.spots.length - 1; i >= 0; i--) { // Iterate backwards for safe removal
+            var spotNameLower = orderDoc.spots[i].name.toLowerCase();
+            if (spotNameLower === "base-color" || spotNameLower === "mock_base-color") {
+                try { orderDoc.spots[i].remove(); log("Removed pre-existing spot '" + orderDoc.spots[i].name + "'."); } catch(e) { log("Error removing spot '" + orderDoc.spots[i].name + "': " + e.message); }
             }
         }
-        log("Swatch panel cleared of default colors and any pre-existing 'base-color'.");
+        log("Swatch panel cleared of default colors and any pre-existing 'base-color' or 'MOCK_base-color'.");
 
         // 1. PRE-FLIGHT COLOR DETECTION (Smart Swatch & Object Lookup)
         var mockupSourceRGB = null; 
