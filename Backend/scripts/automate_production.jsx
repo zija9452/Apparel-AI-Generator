@@ -509,6 +509,7 @@ function runAutomation() {
         try {
             var targetName = name.toLowerCase().replace(/[^a-z0-9]/g, "");
             var s = null;
+            // Check if swatch already exists to avoid duplicates
             for (var i = 0; i < doc.spots.length; i++) {
                 if (doc.spots[i].name.toLowerCase().replace(/[^a-z0-9]/g, "") === targetName) {
                     s = doc.spots[i]; break;
@@ -733,10 +734,10 @@ function runAutomation() {
                     function processSubColor(c) {
                         if (!c || c.typename === "NoColor") return null;
                         
+                        // PRIORITY: Check if this color is already an official spot
                         if (c.typename === "SpotColor") {
                             var rawName = c.spot.name;
                             var cleanName = rawName.replace(/^MOCK_/, "").toLowerCase().replace(/[^a-z0-9]/g, "").replace(/^mock/, ""); 
-                            if (isText) log("   - Spot Name: '" + rawName + "' (Clean: '" + cleanName + "')");
                             if (officialSpots[cleanName]) {
                                 var sc = new SpotColor(); sc.spot = officialSpots[cleanName];
                                 if (isText) log("   - SUCCESS: Linked via Name Match!");
