@@ -1197,4 +1197,58 @@ function runAutomation() {
                     if (it.typename === "PathItem") {
                         var isSpot = false;
                         try {
-                            if (it
+                            if (it.stroked && it.strokeColor && it.strokeColor.typename === "SpotColor") isSpot = true;
+                        } catch(e) {}
+                        // Only remove if it's NOT a spot color
+                        if (!isSpot) it.stroked = false;
+                    } 
+                    else if (it.typename === "GroupItem") recurse(it.pageItems);
+                    else if (it.typename === "CompoundPathItem") recurse(it.pathItems);
+                }
+            }
+            recurse(container.pageItems || [container]);
+        } catch (e) {}
+    }
+
+    function forceCmykRecursive(item) {
+        if (!item) return;
+        try {
+            if (item.typename === "GroupItem") {
+                for (var i = 0; i < item.pageItems.length; i++) forceCmykRecursive(item.pageItems[i]);
+            } else if (item.typename === "PathItem" || item.typename === "CompoundPathItem") {
+                if (item.filled) item.fillColor = anyToCmyk(item.fillColor);
+                if (item.stroked) item.strokeColor = anyToCmyk(item.strokeColor);
+            } else if (item.typename === "TextFrame") {
+                try { item.filled = false; } catch(e) {}
+                try { item.stroked = false; } catch(e) {}
+                item.textRange.characterAttributes.fillColor = anyToCmyk(item.textRange.characterAttributes.fillColor);
+            }
+        } catch (e) {}
+    }
+
+    function anyToCmyk(color) {
+        if (color.typename === "RGBColor") return rgbToCmyk(color);
+        if (color.typename === "SpotColor" && color.color.typename === "RGBColor") { color.color = rgbToCmyk(color.color); }
+        return color;
+    }
+
+    function rgbToCmyk(rgb) {
+        var r = rgb.red / 255, g = rgb.green / 255, b = rgb.blue / 255;
+        var k = 1 - Math.max(r, Math.max(g, b));
+        var cmyk = new CMYKColor();
+        if (k < 1) {
+            cmyk.cyan = Math.round((1 - r - k) / (1 - k) * 100);
+            cmyk.magenta = Math.round((1 - g - k) / (1 - k) * 100);
+            cmyk.yellow = Math.round((1 - b - k) / (1 - k) * 100);
+        } else { cmyk.cyan = 0; cmyk.magenta = 0; cmyk.yellow = 0; }
+        cmyk.black = Math.round(k * 100);
+        return cmyk;
+    }
+
+    function isAccessory(p) { var n = p.toLowerCase(); return n.indexOf("twill") !== -1 || n.indexOf("tukdi") !== -1 || n.indexOf("tape") !== -1; }
+    function getFriendlySize(s) { 
+        var m = { "XS": "XS", "S": "Small", "M": "Medium", "L": "Large", "XL": "XL", "XXL": "2XL", "2XL": "2XL", "3XL": "3XL", "XXXL": "3XL", "4XL": "4XL", "XXXXL": "4XL" }; 
+        return m[s.toUpperCase()] || s; 
+    }
+}
+runAutomation();
