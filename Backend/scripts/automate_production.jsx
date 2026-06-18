@@ -1022,9 +1022,20 @@ function runAutomation() {
                         var finalFill = null;
                         if (savedFillSpotName) {
                             try {
-                                var spot = activeDoc.spots.getByName(savedFillSpotName);
-                                finalFill = new SpotColor(); finalFill.spot = spot;
-                            } catch(e) {}
+                                // Try exact match first
+                                finalFill = new SpotColor(); 
+                                finalFill.spot = activeDoc.spots.getByName(savedFillSpotName);
+                            } catch(e) {
+                                // Fallback: Try match without MOCK_ prefix
+                                try {
+                                    var cleanName = savedFillSpotName.replace(/^MOCK_/i, "");
+                                    finalFill = new SpotColor();
+                                    finalFill.spot = activeDoc.spots.getByName(cleanName);
+                                    log("   - Re-mapped Number color from " + savedFillSpotName + " to " + cleanName);
+                                } catch(e2) {
+                                    finalFill = savedFillColor;
+                                }
+                            }
                         }
                         if (!finalFill) finalFill = savedFillColor;
 
@@ -1039,9 +1050,20 @@ function runAutomation() {
                         var finalStroke = null;
                         if (savedStrokeSpotName) {
                             try {
-                                var spot = activeDoc.spots.getByName(savedStrokeSpotName);
-                                finalStroke = new SpotColor(); finalStroke.spot = spot;
-                            } catch(e) {}
+                                // Try exact match first
+                                finalStroke = new SpotColor();
+                                finalStroke.spot = activeDoc.spots.getByName(savedStrokeSpotName);
+                            } catch(e) {
+                                // Fallback: Try match without MOCK_ prefix
+                                try {
+                                    var cleanName = savedStrokeSpotName.replace(/^MOCK_/i, "");
+                                    finalStroke = new SpotColor();
+                                    finalStroke.spot = activeDoc.spots.getByName(cleanName);
+                                    log("   - Re-mapped Number stroke from " + savedStrokeSpotName + " to " + cleanName);
+                                } catch(e2) {
+                                    finalStroke = savedStrokeColor;
+                                }
+                            }
                         }
                         if (!finalStroke) finalStroke = savedStrokeColor;
 
