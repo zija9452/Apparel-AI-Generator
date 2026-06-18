@@ -276,12 +276,13 @@ function runAutomation() {
                                         if (pastedDesign) {
                                             log("Design pasted into Order doc. Starting alignment/cleanup.");
                                             mergeAndCleanupSwatches(orderDoc, pastedDesign);
+                                            
+                                            // --- NEW: Programmatically merge duplicates to avoid popup ---
+                                            mergeDuplicateSwatches(orderDoc);
+                                            
                                             if (pastedDesign.typename !== "GroupItem") {
                                                 var wrapper = orderDoc.groupItems.add(); pastedDesign.moveToBeginning(wrapper); pastedDesign = wrapper;
                                             }
-                                            
-                                            // log("Checking for 'Loose Logos' that might overlap with this part in Mockup...");
-                                            // attachLooseLogos(sourceDesign, pastedDesign);
                                             
                                             if (isSleeve) {
                                                 log("Sleeve detected. Rotating design -73 degrees for alignment.");
@@ -505,6 +506,26 @@ function runAutomation() {
     }
 
     // --- HELPER FUNCTIONS ---
+    function mergeDuplicateSwatches(doc) {
+        try {
+            var swatches = doc.swatches;
+            var seen = {};
+            for (var i = swatches.length - 1; i >= 0; i--) {
+                var sw = swatches[i];
+                if (sw.name === "[None]" || sw.name === "[Registration]") continue;
+                if (seen[sw.name]) {
+                    // Merge this duplicate into the original
+                    try {
+                        sw.remove(seen[sw.name]);
+                        log("Merged duplicate swatch: " + sw.name);
+                    } catch(e) { log("Merge error for " + sw.name + ": " + e.message); }
+                } else {
+                    seen[sw.name] = sw;
+                }
+            }
+        } catch(e) { log("Error in mergeDuplicateSwatches: " + e.message); }
+    }
+
     function updateSwatchToCMYK(doc, name, cmyk) {
         try {
             var targetName = name.toLowerCase().replace(/[^a-z0-9]/g, "");
