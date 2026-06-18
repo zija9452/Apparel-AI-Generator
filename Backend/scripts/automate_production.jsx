@@ -1,5 +1,6 @@
 function runAutomation() {
     try {
+        app.displayDialogs = DialogModes.NO; // Suppress all Illustrator dialogs
         if (typeof planPath === 'undefined') return;
 
         var planFile = new File(planPath);
