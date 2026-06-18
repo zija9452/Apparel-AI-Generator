@@ -647,3 +647,642 @@ function runAutomation() {
                                 applySpot(it.pathItems[p], "strokeColor");
                             }
                         }
+                    }
+                    else if (it.typename === "PathItem" || it.typename === "TextFrame") {
+                        applySpot(it, "fillColor");
+                        applySpot(it, "strokeColor");
+                    }
+                }
+            }
+
+            function applySpot(obj, prop) {
+                try {
+                    var colorObj = null;
+                    var isText = (obj.typename === "TextFrame");
+                    
+                    if (isText) {
+                        if (obj.textRange.length === 0) return;
+                        log("DEBUG TEXT: Checking '" + obj.contents + "' for " + prop);
+                        
+                        // Level 1: Character Attributes
+                        try { colorObj = obj.textRange.characterAttributes[prop]; } catch(e) {}
+                        
+                        // Level 2: First Character direct
+                        if (!colorObj || colorObj.typename === "NoColor") {
+                            try { colorObj = obj.textRange.characters[0].characterAttributes[prop]; if (colorObj && colorObj.typename !== "NoColor") log("   - Using Level 1 (First Character)"); } catch(e) {}
+                        }
+                        
+                        // Level 3: Frame Level
+                        if (!colorObj || colorObj.typename === "NoColor") {
+                            try { colorObj = obj[prop]; if (colorObj && colorObj.typename !== "NoColor") log("   - Using Level 2 (Frame Level)"); } catch(e) {}
+                        }
+                        
+                        // Level 4: Parent Group Level (Crucial for Group-applied colors)
+                        if (!colorObj || colorObj.typename === "NoColor") {
+                            var p = obj.parent;
+                            while (p && p.typename !== "Layer" && p.typename !== "Document") {
+                                try { 
+                                    colorObj = p[prop]; 
+                                    if (colorObj && colorObj.typename !== "NoColor") {
+                                        log("   - Using Level 3 (Parent Group: " + (p.name || "Unnamed") + ")");
+                                        break; 
+                                    }
+                                } catch(e) {}
+                                p = p.parent;
+                            }
+                        }
+
+                        // Level 5: Temporary Expand Check for Appearance-applied colors
+                        if (!colorObj || colorObj.typename === "NoColor") {
+                            var tempGroup = null;
+                            try {
+                                log("   - Attempting Level 5 (Temp Expand Appearance via Temp Group)...");
+                                var prevSel = [];
+                                for (var sIndex = 0; sIndex < doc.selection.length; sIndex++) {
+                                    prevSel.push(doc.selection[sIndex]);
+                                }
+                                
+                                // Create a temporary group to isolate the expansion
+                                tempGroup = doc.groupItems.add();
+                                var tempObj = obj.duplicate(tempGroup, ElementPlacement.PLACEATBEGINNING);
+                                
+                                doc.selection = null;
+                                tempGroup.selected = true;
+                                
+                                try {
+                                    app.executeMenuCommand("expandStyle");
+                                } catch(eExp) {
+                                    try { app.executeMenuCommand("Expand"); } catch(eExp2) {}
+                                }
+                                
+                                var foundColor = null;
+                                function extractColorFromItems(items) {
+                                    for (var k = 0; k < items.length; k++) {
+                                        var item = items[k];
+                                        if (item.typename === "PathItem") {
+                                            var c = item[prop];
+                                            if (c && c.typename !== "NoColor") {
+                                                foundColor = c;
+                                                return;
+                                            }
+                                        } else if (item.typename === "TextFrame") {
+                                            var c2 = item.textRange.characterAttributes[prop];
+                                            if (c2 && c2.typename !== "NoColor") {
+                                                foundColor = c2;
+                                                return;
+                                            }
+                                        } else if (item.typename === "GroupItem") {
+                                            extractColorFromItems(item.pageItems);
+                                            if (foundColor) return;
+                                        }
+                                    }
+                                }
+                                
+                                // Check the contents of the tempGroup (which now contains expanded items)
+                                extractColorFromItems(tempGroup.pageItems);
+                                
+                                doc.selection = null;
+                                for (var sIndex = 0; sIndex < prevSel.length; sIndex++) {
+                                    try { prevSel[sIndex].selected = true; } catch(e) {}
+                                }
+                                
+                                if (foundColor) {
+                                    colorObj = foundColor;
+                                    log("   - SUCCESS: Found color via Temp Expand! Type: " + colorObj.typename);
+                                }
+                            } catch(eTemp) {
+                                log("   - Temp Expand failed: " + eTemp.message);
+                            } finally {
+                                // Final safety cleanup: remove the entire temporary group
+                                try { if (tempGroup) tempGroup.remove(); } catch(e) {}
+                            }
+                        }
+                        
+                        if (colorObj) log("   - Effective Color Type: " + colorObj.typename);
+                        else log("   - CRITICAL: Color not found at any level for text.");
+                    } else {
+                        colorObj = obj[prop];
+                    }
+                    
+                    if (!colorObj || colorObj.typename === "NoColor") return;
+
+                    function processSubColor(c) {
+                        if (!c || c.typename === "NoColor") return null;
+                        
+                        // PRIORITY: Check if this color is already an official spot
+                        if (c.typename === "SpotColor") {
+                            var rawName = c.spot.name;
+                            var cleanName = rawName.replace(/^MOCK_/, "").toLowerCase().replace(/[^a-z0-9]/g, "").replace(/^mock/, ""); 
+                            if (officialSpots[cleanName]) {
+                                var sc = new SpotColor(); sc.spot = officialSpots[cleanName];
+                                if (isText) log("   - SUCCESS: Linked via Name Match!");
+                                return sc;
+                            }
+                        } 
+                        
+                        var rgb = [];
+                        try {
+                            if (c.typename === "RGBColor") {
+                                rgb = [c.red, c.green, c.blue];
+                            } else if (c.typename === "CMYKColor") {
+                                rgb = app.convertSampleColor(ImageColorSpace.CMYK, [c.cyan, c.magenta, c.yellow, c.black], ImageColorSpace.RGB, ColorConvertPurpose.defaultpurpose);
+                            } else if (c.typename === "GrayColor") {
+                                var g = 255 - (c.gray * 2.55);
+                                rgb = [g, g, g];
+                                if (isText) log("   - GrayColor detected (" + c.gray + "%), using RGB [" + Math.round(g) + "]");
+                            } else if (c.typename === "SpotColor" && c.spot.color.typename === "RGBColor") {
+                                rgb = [c.spot.color.red, c.spot.color.green, c.spot.color.blue];
+                            } else if (c.typename === "SpotColor" && c.spot.color.typename === "GrayColor") {
+                                var g2 = 255 - (c.spot.color.gray * 2.55);
+                                rgb = [g2, g2, g2];
+                            } else return null;
+                        } catch(e) { return null; }
+
+                        var cr = Math.round(rgb[0]), cg = Math.round(rgb[1]), cb = Math.round(rgb[2]);
+                        if (isText) log("   - RGB Detected: [" + cr + "," + cg + "," + cb + "]");
+
+                        var bestMatch = null, minDiff = 15;
+                        for (var mName in mockupColorMap) {
+                            var target = mockupColorMap[mName];
+                            var diff = Math.abs(cr - target.r) + Math.abs(cg - target.g) + Math.abs(cb - target.b);
+                            if (diff < minDiff) {
+                                minDiff = diff;
+                                bestMatch = mName;
+                            }
+                        }
+
+                        if (bestMatch) {
+                            var sc2 = new SpotColor();
+                            sc2.spot = officialSpots[bestMatch];
+                            if (isText) log("   - SUCCESS: Linked via Smart Sense to '" + bestMatch + "' (Diff: " + minDiff + ")");
+                            return sc2;
+                        } else {
+                            if (isText) log("   - No Smart Sense match found for RGB [" + cr + "," + cg + "," + cb + "], using direct CMYK conversion.");
+                            var r = cr / 255, g = cg / 255, b = cb / 255;
+                            var k = 1 - Math.max(r, Math.max(g, b));
+                            var cmyk = new CMYKColor();
+                            if (k < 1) {
+                                cmyk.cyan = Math.round((1 - r - k) / (1 - k) * 100);
+                                cmyk.magenta = Math.round((1 - g - k) / (1 - k) * 100);
+                                cmyk.yellow = Math.round((1 - b - k) / (1 - k) * 100);
+                            } else { cmyk.cyan = 0; cmyk.magenta = 0; cmyk.yellow = 0; }
+                            cmyk.black = Math.round(k * 100);
+                            return cmyk;
+                        }
+                    }
+
+                    var updated = processSubColor(colorObj);
+                    if (updated) {
+                        if (isText) {
+                            try {
+                                // Apply to character attributes directly.
+                                // We avoid setting obj.filled = false or clearAppearance here
+                                // because those commands often strip Warp/Arch effects from TextFrames.
+                                var ca = obj.textRange.characterAttributes;
+                                ca[prop] = updated;
+                                if (prop === "strokeColor") ca.strokeWeight = 2.5;
+                                log("   - SUCCESS: Applied linked color to text characters.");
+                            } catch(e) {
+                                try { obj[prop] = updated; } catch(e2) {}
+                            }
+                        } else {
+                            obj[prop] = updated;
+                            if (prop === "strokeColor") { obj.strokeWeight = obj.strokeWeight || 2; obj.stroked = true; }
+                        }
+                    } else if (colorObj.typename === "GradientColor") {
+                        var stops = colorObj.gradient.gradientStops;
+                        for (var s = 0; s < stops.length; s++) {
+                            var stopUpdated = processSubColor(stops[s].color);
+                            if (stopUpdated) stops[s].color = stopUpdated;
+                        }
+                    } else if (isText) {
+                        log("   - WARNING: No production match found for text color. It will remain in its original mockup color.");
+                    }
+                } catch(e) { log("ApplySpot Error: " + e.message); }
+            }
+                             
+            deepReLink(targetContainer || doc);
+        } catch (eMerge) { log("Merge Error: " + eMerge.message); }
+    }
+
+    function bringPatternLabelsToFront(container, targetParent) {
+        try {
+            if (!container || container.typename !== "GroupItem") return;
+            var dest = targetParent || container;
+            var sizePatterns = ["small", "medium", "large", "xl", "2xl", "3xl", "extra", "size", "front", "back", "sleeve", "neck", "label"];
+            function processRecursive(parent) {
+                if (!parent.pageItems || parent.pageItems.length === 0) return;
+                for (var i = parent.pageItems.length - 1; i >= 0; i--) {
+                    var it = parent.pageItems[i];
+                    var iName = (it.name || "").toLowerCase();
+                    var isLabel = (it.typename === "TextFrame");
+                    if (!isLabel) { for (var n = 0; n < sizePatterns.length; n++) if (iName.indexOf(sizePatterns[n]) !== -1) { isLabel = true; break; } }
+                    if (!isLabel && it.typename === "GroupItem") { try { if (it.textFrames && it.textFrames.length > 0) isLabel = true; } catch(e) {} }
+                    if (isLabel) { try { it.move(dest, ElementPlacement.PLACEATBEGINNING); it.zOrder(ZOrderMethod.BRINGTOFRONT); } catch(e) {} }
+                    else if (it.typename === "GroupItem") { if (it.name !== "design_clip_group") processRecursive(it); }
+                }
+            }
+            processRecursive(container);
+        } catch (e) {}
+    }
+
+    function releaseInternalClippingMasks(group) {
+        try {
+            if (!group || group.typename !== "GroupItem") return;
+            for (var i = group.pageItems.length - 1; i >= 0; i--) {
+                var it = group.pageItems[i];
+                if (it.typename === "GroupItem") { if (it.clipped) it.clipped = false; releaseInternalClippingMasks(it); }
+            }
+        } catch (e) {}
+    }
+
+    function findAnywhere(container, name) {
+        if (!container || !name) return null;
+        var sName = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+        function search(items, depth) {
+            if (!items || items.length === 0 || depth > 3) return null;
+            for (var i = 0; i < items.length; i++) {
+                if ((items[i].name || "").toLowerCase().replace(/[^a-z0-9]/g, "") === sName) return items[i];
+            }
+            for (var i = 0; i < items.length; i++) {
+                var found = null;
+                try {
+                    if (items[i].typename === "GroupItem") found = search(items[i].pageItems, depth + 1);
+                    else if (items[i].typename === "Layer") found = search(items[i].layers, depth + 1) || search(items[i].pageItems, depth + 1);
+                } catch (e) {}
+                if (found) return found;
+            }
+            return null;
+        }
+        return search(container.layers ? container.layers : [container], 0);
+    }
+
+    function alignAndScale(obj, target, alignBottom, isSleeve, isNeck, referenceItem) {
+        try {
+            var mm = 2.83465, margin7 = 7 * mm, margin1Inch = 25.4 * mm;
+            var tB = target.visibleBounds;
+            var mBottom = (alignBottom || isSleeve) ? margin1Inch : margin7;
+            var safeTop = tB[1] - margin7, safeBottom = tB[3] + mBottom, safeLeft = tB[0] + margin7, safeRight = tB[2] - margin7;
+            var availableW = Math.abs(safeRight - safeLeft), availableH = Math.abs(safeTop - safeBottom);
+            var targetCenterX = safeLeft + (availableW / 2), targetCenterY = safeTop - (availableH / 2);
+            var ref = referenceItem || obj, oB = ref.visibleBounds, oW = Math.abs(oB[2] - oB[0]), oH = Math.abs(oB[1] - oB[3]);
+            if (oW === 0 || oH === 0) return;
+            var wBleed = isSleeve ? 1.06 : 1.03;
+            obj.resize((availableW / oW) * 100 * wBleed, (availableH / oH) * 100, true, true, true, true, 100, Transformation.CENTER);
+            var nB = ref.visibleBounds, nW = Math.abs(nB[2] - nB[0]), nH = Math.abs(nB[1] - nB[3]);
+            obj.left += (targetCenterX - (nB[0] + nW / 2)); obj.top += (targetCenterY - (nB[1] - nH / 2));
+        } catch (e) {}
+    }
+
+    function findPlacementPath(container, isMockupIsolation) {
+        if (!container) return null;
+        if (container.typename === "PathItem" || container.typename === "CompoundPathItem") return container;
+        var found = null;
+        function search(items) {
+            if (!items) return false;
+            for (var i = 0; i < items.length; i++) {
+                if (items[i].typename === "PathItem" || items[i].typename === "CompoundPathItem") {
+                    if ((items[i].name || "").toLowerCase().indexOf("logo") !== -1) continue;
+                    found = items[i]; return true; 
+                } else if (items[i].typename === "GroupItem") if (search(items[i].pageItems)) return true;
+            }
+            return false;
+        }
+        search(container.pageItems); return found;
+    }
+
+    function isolateGraphics(container) {
+        try {
+            if (!container || container.pageItems.length < 2) return;
+            var pathsToDelete = [], maxArea = 0;
+            function findMax(items) {
+                for (var i = 0; i < items.length; i++) {
+                    var it = items[i];
+                    if (it.typename === "PathItem" || it.typename === "CompoundPathItem") {
+                        var area = Math.abs(it.width * it.height); if (area > maxArea) maxArea = area;
+                    } else if (it.typename === "GroupItem") findMax(it.pageItems);
+                }
+            }
+            findMax(container.pageItems);
+            function collect(items) {
+                for (var i = 0; i < items.length; i++) {
+                    var it = items[i];
+                    if (it.typename === "PathItem" || it.typename === "CompoundPathItem") {
+                        if (Math.abs(it.width * it.height) >= maxArea * 0.9) pathsToDelete.push(it);
+                    } else if (it.typename === "GroupItem") collect(it.pageItems);
+                }
+            }
+            collect(container.pageItems);
+            for (var d = 0; d < pathsToDelete.length; d++) pathsToDelete[d].remove();
+        } catch (e) {}
+    }
+
+    function getSourceView(part, mockupDoc, hasPers) {
+        var nPart = part.toLowerCase(); if (isAccessory(nPart)) return null;
+        var targets = [];
+        if (nPart.indexOf("sleeve") !== -1) {
+            if (nPart.indexOf("right") !== -1) targets.push("Right Sleeve", "Right_Sleeve", "RightSleeve", "Sleeve");
+            else if (nPart.indexOf("left") !== -1) targets.push("Left Sleeve", "Left_Sleeve", "LeftSleeve", "Sleeve");
+            else targets.push("Short Sleeve", "Short_Sleeve", "Long Sleeve", "Long_Sleeve", "Full Sleeve", "Sleeve", "sleeve", "Sleeves");
+        }
+        else if (nPart.indexOf("front") !== -1) targets = ["front", "FRONT", "Front View", "Front_View"];
+        else if (nPart.indexOf("back") !== -1) targets = ["back", "BACK", "Back View", "Back_View"];
+        else if (nPart.indexOf("neck") !== -1) targets = ["Neck", "neck", "NECK", "collar", "Rib"];
+        targets.push("logo", "LOGO", "Logo_Group");
+        for (var t = 0; t < targets.length; t++) { var found = findAnywhere(mockupDoc, targets[t]); if (found) return found; }
+        return null;
+    }
+
+    function smartContrast(group, bgColor) {
+        try {
+            if (!bgColor) return;
+            var b = 0;
+            if (bgColor.typename === "CMYKColor") b = (1 - (bgColor.cyan/100 * 0.3 + bgColor.magenta/100 * 0.59 + bgColor.yellow/100 * 0.11 + bgColor.black/100));
+            else if (bgColor.typename === "RGBColor") b = (0.299 * bgColor.red + 0.587 * bgColor.green + 0.114 * bgColor.blue) / 255;
+            var c = new CMYKColor(); if (b < 0.5) { c.cyan=0; c.magenta=0; c.yellow=0; c.black=0; } else { c.cyan=0; c.magenta=0; c.yellow=0; c.black=100; }
+            function applyToText(container) {
+                if (container.textFrames) for (var t = 0; t < container.textFrames.length; t++) container.textFrames[t].textRange.characterAttributes.fillColor = c;
+                if (container.pathItems) {
+                    for (var p = 0; p < container.pathItems.length; p++) {
+                        var it = container.pathItems[p];
+                        var n = (it.name || "").toLowerCase();
+                        if (n.indexOf("label") !== -1 || n.indexOf("size") !== -1 || n.indexOf("logo") !== -1) {
+                            if (it.filled) it.fillColor = c; if (it.stroked) it.strokeColor = c;
+                        }
+                    }
+                }
+                if (container.groupItems) for (var g = 0; g < container.groupItems.length; g++) applyToText(container.groupItems[g]);
+            }
+            applyToText(group);
+        } catch (e) {}
+    }
+
+    function applyTextReplacements(container, replacements) {
+        for (var i = 0; i < replacements.length; i++) {
+            var rep = replacements[i];
+            if (!rep.layer_name) continue;
+
+            var lName = rep.layer_name.toUpperCase();
+            var targets = [lName];
+            
+            if (lName.indexOf("NAME") !== -1) {
+                targets.push("PLAYER NAME", "NAME_LAYER");
+            } else if (lName.indexOf("NUMBER") !== -1 || lName === "NUM" || lName === "#") {
+                targets.push("NUMBER", "NUM", "#", "PLAYER NUMBER");
+            }
+
+            for (var t = 0; t < targets.length; t++) {
+                replaceInContainer(container, targets[t], rep.new_value, false);
+            }
+        }
+    }
+
+    function replaceInContainer(container, target, value, alreadyMatched) {
+        if (!target || !container) return;
+        var tUpper = target.toUpperCase();
+        var cName = (container.name || "").toUpperCase();
+        var currentMatch = alreadyMatched || (cName.indexOf(tUpper) !== -1);
+
+        if (container.textFrames && container.textFrames.length > 0) {
+            for (var k = 0; k < container.textFrames.length; k++) {
+                var tf = container.textFrames[k];
+                if (tf.hidden) continue;
+
+                var tfName = (tf.name || "").toUpperCase();
+                var tfCont = (tf.contents || "").toUpperCase();
+                
+                if (currentMatch || tfName.indexOf(tUpper) !== -1 || tfCont.indexOf(tUpper) !== -1) {
+                    var savedFillSpotName   = null;
+                    var savedStrokeSpotName = null;
+                    var savedFillColor      = null; // Fallback raw color
+                    var savedStrokeColor     = null; // Fallback raw color
+                    var savedStrokeWeight   = null;
+                    var savedSize           = null;
+                    var savedFont           = null;
+
+                    try {
+                        if (tf.textRange.length > 0) {
+                            var charAttrs = tf.textRange.characters[0].characterAttributes;
+                            
+                            // 1. Check Character Level
+                            var fc = charAttrs.fillColor;
+                            var sc = charAttrs.strokeColor;
+                            
+                            // 2. Fallback to Frame Level if character is "NoColor"
+                            if (!fc || fc.typename === "NoColor") try { fc = tf.fillColor; } catch(e) {}
+                            if (!sc || sc.typename === "NoColor") try { sc = tf.strokeColor; } catch(e) {}
+                            
+                            // 3. Fallback to Parent Group Level (Appearance-applied colors often live here)
+                            var p = tf.parent;
+                            while ((!fc || fc.typename === "NoColor") && p && p.typename === "GroupItem") {
+                                try { fc = p.fillColor; } catch(e) {}
+                                p = p.parent;
+                            }
+                            p = tf.parent;
+                            while ((!sc || sc.typename === "NoColor") && p && p.typename === "GroupItem") {
+                                try { sc = p.strokeColor; } catch(e) {}
+                                p = p.parent;
+                            }
+
+                            if (fc && fc.typename !== "NoColor") {
+                                if (fc.typename === "SpotColor") savedFillSpotName = fc.spot.name;
+                                savedFillColor = fc;
+                            }
+                            if (sc && sc.typename !== "NoColor") {
+                                if (sc.typename === "SpotColor") savedStrokeSpotName = sc.spot.name;
+                                savedStrokeColor = sc;
+                            }
+
+                            try { savedStrokeWeight = charAttrs.strokeWeight || tf.strokeWeight; } catch(e) {}
+                            try { savedSize         = charAttrs.size; }        catch(e) {}
+                            try { savedFont         = charAttrs.textFont; }    catch(e) {}
+                        }
+                    } catch(eStyle) { log("STYLE SAVE ERROR: " + eStyle.message); }
+
+                    tf.contents = value;
+                    tf.zOrder(ZOrderMethod.BRINGTOFRONT);
+                    tf.hidden = false;
+
+                    // Disable object-level fill/stroke to let character-level show through
+                    try { tf.filled = false; tf.stroked = false; } catch(eClear) {}
+
+                    try {
+                        var activeDoc = app.activeDocument;
+                        var rangeAttrs = tf.textRange.characterAttributes;
+
+                        // Re-apply Fill
+                        var finalFill = null;
+                        if (savedFillSpotName) {
+                            try {
+                                var spot = activeDoc.spots.getByName(savedFillSpotName);
+                                finalFill = new SpotColor(); finalFill.spot = spot;
+                            } catch(e) {}
+                        }
+                        if (!finalFill) finalFill = savedFillColor;
+
+                        if (finalFill && finalFill.typename !== "NoColor") {
+                            rangeAttrs.fillColor = finalFill;
+                            for (var ci = 0; ci < tf.textRange.characters.length; ci++) {
+                                tf.textRange.characters[ci].characterAttributes.fillColor = finalFill;
+                            }
+                        }
+
+                        // Re-apply Stroke
+                        var finalStroke = null;
+                        if (savedStrokeSpotName) {
+                            try {
+                                var spot = activeDoc.spots.getByName(savedStrokeSpotName);
+                                finalStroke = new SpotColor(); finalStroke.spot = spot;
+                            } catch(e) {}
+                        }
+                        if (!finalStroke) finalStroke = savedStrokeColor;
+
+                        if (finalStroke && finalStroke.typename !== "NoColor") {
+                            rangeAttrs.strokeColor = finalStroke;
+                            for (var ci = 0; ci < tf.textRange.characters.length; ci++) {
+                                tf.textRange.characters[ci].characterAttributes.strokeColor = finalStroke;
+                            }
+                            if (savedStrokeWeight) {
+                                rangeAttrs.strokeWeight = savedStrokeWeight;
+                                for (var ci = 0; ci < tf.textRange.characters.length; ci++) {
+                                    tf.textRange.characters[ci].characterAttributes.strokeWeight = savedStrokeWeight;
+                                }
+                            }
+                        }
+
+                        if (savedSize) rangeAttrs.size = savedSize;
+                        if (savedFont) rangeAttrs.textFont = savedFont;
+
+                    } catch(eReapply) { log("STYLE RE-APPLY ERROR: " + eReapply.message); }
+                }
+            }
+        }
+
+        if (container.groupItems) {
+            for (var g = 0; g < container.groupItems.length; g++) {
+                replaceInContainer(container.groupItems[g], target, value, currentMatch);
+            }
+        }
+    }
+
+    function exportResult(doc, idx, folder, name) {
+        try {
+            doc.artboards.setActiveArtboardIndex(idx);
+            var opt = new ExportOptionsJPEG(); opt.artBoardClipping = true; opt.antiAliasing = true; opt.qualitySetting = 80; opt.imageColorSpace = ImageColorSpace.CMYK;
+            doc.exportFile(new File(folder + "/" + name.replace(/[^a-zA-Z0-9]/g, '_') + ".jpg"), ExportType.JPEG, opt);
+        } catch (e) {}
+    }
+
+    function ensureBlackStrokes(container) {
+        try {
+            var black = new CMYKColor(); black.cyan = 56; black.magenta = 56; black.yellow = 53; black.black = 92;
+            function recurse(items) {
+                for (var i = 0; i < items.length; i++) {
+                    if (items[i].typename === "PathItem") { if (items[i].stroked) items[i].strokeColor = black; }
+                    else if (items[i].typename === "GroupItem") recurse(items[i].pageItems);
+                }
+            }
+            recurse(container.pageItems || [container]);
+        } catch (e) {}
+    }
+
+    function clearAllStrokes(container) {
+        try {
+            function recurse(items) {
+                for (var i = 0; i < items.length; i++) {
+                    var it = items[i];
+                    // SKIP TextFrames entirely! Their strokes are handled by replaceInContainer
+                    if (it.typename === "TextFrame") continue;
+
+                    if (it.typename === "PathItem") {
+                        var isSpot = false;
+                        try {
+                            if (it.stroked && it.strokeColor && it.strokeColor.typename === "SpotColor") isSpot = true;
+                        } catch(e) {}
+                        // Only remove if it's NOT a spot color
+                        if (!isSpot) it.stroked = false;
+                    } 
+                    else if (it.typename === "GroupItem") recurse(it.pageItems);
+                    else if (it.typename === "CompoundPathItem") recurse(it.pathItems);
+                }
+            }
+            recurse(container.pageItems || [container]);
+        } catch (e) {}
+    }
+
+    function bringLogosToFront(container) {
+        try {
+            function recurse(items) {
+                for (var i = items.length - 1; i >= 0; i--) {
+                    var it = items[i];
+                    if (it.hidden) continue;
+                    if (((it.name || "").toLowerCase().indexOf("logo") !== -1) || (it.typename === "TextFrame")) { try { it.zOrder(ZOrderMethod.BRINGTOFRONT); } catch(e) {} }
+                    if (it.typename === "GroupItem") recurse(it.pageItems);
+                }
+            }
+            recurse(container.pageItems || [container]);
+        } catch (e) {}
+    }
+
+    function rectsIntersect(r1, r2) { return !(r2[0] > r1[2] || r2[2] < r1[0] || r2[1] < r1[3] || r2[3] > r1[1]); }
+
+    function attachLooseLogos(sourceItem, targetGroup) {
+        try {
+            if (!sourceItem || !targetGroup) return;
+            var baseBounds; try { baseBounds = sourceItem.visibleBounds; } catch (e) { return; }
+            var searchLayer = sourceItem; while (searchLayer.parent && searchLayer.parent.typename !== "Document") { searchLayer = searchLayer.parent; }
+            function checkRecursive(container) {
+                if (!container.pageItems || container.pageItems.length === 0) return;
+                for (var i = container.pageItems.length - 1; i >= 0; i--) {
+                    var item = container.pageItems[i];
+                    if (item === sourceItem || item.hidden || item.locked || item.typename === "Guide") continue;
+                    try { if (rectsIntersect(baseBounds, item.visibleBounds)) { if (item.typename === "GroupItem" && (!item.name || item.pageItems.length > 5)) checkRecursive(item); else item.duplicate(targetGroup, ElementPlacement.PLACEATBEGINNING); } } catch (e) {}
+                }
+            }
+            if (searchLayer.typename === "Layer") checkRecursive(searchLayer);
+            else { var p = sourceItem.parent; if (p && p.pageItems) checkRecursive(p); }
+        } catch (e3) {}
+    }
+
+    function forceCmykRecursive(item) {
+        if (!item) return;
+        try {
+            if (item.typename === "GroupItem") {
+                for (var i = 0; i < item.pageItems.length; i++) forceCmykRecursive(item.pageItems[i]);
+            } else if (item.typename === "PathItem" || item.typename === "CompoundPathItem") {
+                if (item.filled) item.fillColor = anyToCmyk(item.fillColor);
+                if (item.stroked) item.strokeColor = anyToCmyk(item.strokeColor);
+            } else if (item.typename === "TextFrame") {
+                try { item.filled = false; } catch(e) {}
+                try { item.stroked = false; } catch(e) {}
+                item.textRange.characterAttributes.fillColor = anyToCmyk(item.textRange.characterAttributes.fillColor);
+            }
+        } catch (e) {}
+    }
+
+    function anyToCmyk(color) {
+        if (color.typename === "RGBColor") return rgbToCmyk(color);
+        if (color.typename === "SpotColor" && color.color.typename === "RGBColor") { color.color = rgbToCmyk(color.color); }
+        return color;
+    }
+
+    function rgbToCmyk(rgb) {
+        var r = rgb.red / 255, g = rgb.green / 255, b = rgb.blue / 255;
+        var k = 1 - Math.max(r, Math.max(g, b));
+        var cmyk = new CMYKColor();
+        if (k < 1) {
+            cmyk.cyan = Math.round((1 - r - k) / (1 - k) * 100);
+            cmyk.magenta = Math.round((1 - g - k) / (1 - k) * 100);
+            cmyk.yellow = Math.round((1 - b - k) / (1 - k) * 100);
+        } else { cmyk.cyan = 0; cmyk.magenta = 0; cmyk.yellow = 0; }
+        cmyk.black = Math.round(k * 100);
+        return cmyk;
+    }
+
+    function isAccessory(p) { var n = p.toLowerCase(); return n.indexOf("twill") !== -1 || n.indexOf("tukdi") !== -1 || n.indexOf("tape") !== -1; }
+    function getFriendlySize(s) { 
+        var m = { "XS": "XS", "S": "Small", "M": "Medium", "L": "Large", "XL": "XL", "XXL": "2XL", "2XL": "2XL", "3XL": "3XL", "XXXL": "3XL", "4XL": "4XL", "XXXXL": "4XL" }; 
+        return m[s.toUpperCase()] || s; 
+    }
+}
+runAutomation();
