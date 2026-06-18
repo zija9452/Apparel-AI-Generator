@@ -1026,7 +1026,21 @@ function runAutomation() {
                                 finalFill = new SpotColor(); finalFill.spot = spot;
                             } catch(e) {}
                         }
-                        if (!finalFill) finalFill = savedFillColor;
+                        
+                        // FIX: Do not use savedFillColor directly if it's a SpotColor, 
+                        // because it points to the old document's spot.
+                        if (!finalFill && savedFillColor) {
+                            if (savedFillColor.typename === "SpotColor") {
+                                // Try to find the spot again, or just use the color definition
+                                try {
+                                    finalFill = activeDoc.spots.getByName(savedFillSpotName).color;
+                                } catch(e) {
+                                    finalFill = savedFillColor.spot.color; // Use the color definition
+                                }
+                            } else {
+                                finalFill = savedFillColor;
+                            }
+                        }
 
                         if (finalFill && finalFill.typename !== "NoColor") {
                             rangeAttrs.fillColor = finalFill;
@@ -1043,7 +1057,19 @@ function runAutomation() {
                                 finalStroke = new SpotColor(); finalStroke.spot = spot;
                             } catch(e) {}
                         }
-                        if (!finalStroke) finalStroke = savedStrokeColor;
+                        
+                        // FIX: Do not use savedStrokeColor directly if it's a SpotColor
+                        if (!finalStroke && savedStrokeColor) {
+                            if (savedStrokeColor.typename === "SpotColor") {
+                                try {
+                                    finalStroke = activeDoc.spots.getByName(savedStrokeSpotName).color;
+                                } catch(e) {
+                                    finalStroke = savedStrokeColor.spot.color;
+                                }
+                            } else {
+                                finalStroke = savedStrokeColor;
+                            }
+                        }
 
                         if (finalStroke && finalStroke.typename !== "NoColor") {
                             rangeAttrs.strokeColor = finalStroke;
