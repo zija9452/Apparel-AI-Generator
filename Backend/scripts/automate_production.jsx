@@ -1026,7 +1026,7 @@ function runAutomation() {
                         var finalFill = null;
                         if (savedFillSpotName) {
                             try {
-                                // Always strip MOCK_ prefix before looking for the spot in the active document
+                                // FIX: Strip MOCK_ prefix before looking for the spot in the active document
                                 var cleanName = savedFillSpotName.replace(/^MOCK_/i, "");
                                 finalFill = new SpotColor();
                                 finalFill.spot = getSpotByName(activeDoc, cleanName);
@@ -1049,7 +1049,7 @@ function runAutomation() {
                         var finalStroke = null;
                         if (savedStrokeSpotName) {
                             try {
-                                // Always strip MOCK_ prefix before looking for the spot in the active document
+                                // FIX: Strip MOCK_ prefix before looking for the spot in the active document
                                 var cleanName = savedStrokeSpotName.replace(/^MOCK_/i, "");
                                 finalStroke = new SpotColor();
                                 finalStroke.spot = getSpotByName(activeDoc, cleanName);
