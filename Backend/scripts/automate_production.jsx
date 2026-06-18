@@ -1024,11 +1024,20 @@ function runAutomation() {
                             try {
                                 var spot = activeDoc.spots.getByName(savedFillSpotName);
                                 finalFill = new SpotColor(); finalFill.spot = spot;
-                            } catch(e) {}
+                            } catch(e) {
+                                // If not found, create it!
+                                var newSpot = activeDoc.spots.add();
+                                newSpot.name = savedFillSpotName;
+                                // Copy color definition from old spot
+                                if (savedFillColor && savedFillColor.typename === "SpotColor") {
+                                    newSpot.color = savedFillColor.spot.color;
+                                } else if (savedFillColor) {
+                                    newSpot.color = savedFillColor;
+                                }
+                                finalFill = new SpotColor(); finalFill.spot = newSpot;
+                            }
                         }
                         
-                        // FIX: Do not use savedFillColor directly if it's a SpotColor, 
-                        // because it points to the old document's spot.
                         if (!finalFill && savedFillColor) {
                             if (savedFillColor.typename === "SpotColor") {
                                 // Force conversion to CMYKColor to break the link to the old spot
@@ -1060,10 +1069,19 @@ function runAutomation() {
                             try {
                                 var spot = activeDoc.spots.getByName(savedStrokeSpotName);
                                 finalStroke = new SpotColor(); finalStroke.spot = spot;
-                            } catch(e) {}
+                            } catch(e) {
+                                // If not found, create it!
+                                var newSpot = activeDoc.spots.add();
+                                newSpot.name = savedStrokeSpotName;
+                                if (savedStrokeColor && savedStrokeColor.typename === "SpotColor") {
+                                    newSpot.color = savedStrokeColor.spot.color;
+                                } else if (savedStrokeColor) {
+                                    newSpot.color = savedStrokeColor;
+                                }
+                                finalStroke = new SpotColor(); finalStroke.spot = newSpot;
+                            }
                         }
                         
-                        // FIX: Do not use savedStrokeColor directly if it's a SpotColor
                         if (!finalStroke && savedStrokeColor) {
                             if (savedStrokeColor.typename === "SpotColor") {
                                 var c = savedStrokeColor.spot.color;
