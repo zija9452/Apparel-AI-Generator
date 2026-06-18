@@ -9,6 +9,9 @@ function runAutomation() {
 
         var patternDoc = app.activeDocument;
         
+        // Ensure alerts are suppressed globally
+        app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS;
+        
         function updateStatus(msg, prog, isReady) {
             if (typeof jobDir !== 'undefined') {
                 var statusFile = new File(jobDir + "/status.json");
@@ -89,8 +92,6 @@ function runAutomation() {
             }
         }
         log("Swatch panel cleared of default colors.");
-
-        app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS;
 
         // 1. PRE-FLIGHT COLOR DETECTION (Smart Swatch & Object Lookup)
         var mockupSourceRGB = null; 
@@ -509,21 +510,50 @@ function runAutomation() {
     function mergeDuplicateSwatches(doc) {
         try {
             var swatches = doc.swatches;
-            var seen = {};
+            var masterSwatches = {}; // Name -> Swatch object
+            
+            // First pass: Identify master swatches
+            for (var i = 0; i < swatches.length; i++) {
+                var sw = swatches[i];
+                if (sw.name === "[None]" || sw.name === "[Registration]") continue;
+                if (!masterSwatches[sw.name]) {
+                    masterSwatches[sw.name] = sw;
+                }
+            }
+
+            // Second pass: Find duplicates and merge
             for (var i = swatches.length - 1; i >= 0; i--) {
                 var sw = swatches[i];
                 if (sw.name === "[None]" || sw.name === "[Registration]") continue;
-                if (seen[sw.name]) {
-                    // Merge this duplicate into the original
-                    try {
-                        sw.remove(seen[sw.name]);
-                        log("Merged duplicate swatch: " + sw.name);
-                    } catch(e) { log("Merge error for " + sw.name + ": " + e.message); }
-                } else {
-                    seen[sw.name] = sw;
+                
+                var master = masterSwatches[sw.name];
+                if (sw !== master) {
+                    // This is a duplicate. Replace usages and remove.
+                    replaceSwatchUsages(doc, sw, master);
+                    sw.remove();
+                    log("Merged duplicate swatch: " + sw.name);
                 }
             }
         } catch(e) { log("Error in mergeDuplicateSwatches: " + e.message); }
+    }
+
+    function replaceSwatchUsages(doc, oldSwatch, newSwatch) {
+        function recurse(items) {
+            for (var i = 0; i < items.length; i++) {
+                var it = items[i];
+                if (it.typename === "GroupItem") recurse(it.pageItems);
+                else if (it.typename === "CompoundPathItem") {
+                    if (it.fillColor.typename === "SpotColor" && it.fillColor.spot === oldSwatch) it.fillColor.spot = newSwatch;
+                    if (it.strokeColor.typename === "SpotColor" && it.strokeColor.spot === oldSwatch) it.strokeColor.spot = newSwatch;
+                    recurse(it.pathItems);
+                }
+                else if (it.typename === "PathItem" || it.typename === "TextFrame") {
+                    if (it.fillColor.typename === "SpotColor" && it.fillColor.spot === oldSwatch) it.fillColor.spot = newSwatch;
+                    if (it.strokeColor.typename === "SpotColor" && it.strokeColor.spot === oldSwatch) it.strokeColor.spot = newSwatch;
+                }
+            }
+        }
+        recurse(doc.pageItems);
     }
 
     function updateSwatchToCMYK(doc, name, cmyk) {
