@@ -1,2 +1,31 @@
 .aider*
+
+# Job folders. A single order leaves ~938MB of renders and a zip behind; these
+# are outputs, and they were committed once already - see the history rewrite
+# note in DEPLOYMENT_PLAN.md.
 uploads
+
+# Runtime state, not source. apparel_sessions.db reached 1.1GB before anyone
+# noticed, which is well past GitHub's 100MB per-file limit.
+*.db
+*.db-wal
+*.db-shm
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Secrets. Backend/.gitignore also covers this; repeated here so a new .env
+# anywhere in the tree is ignored by default rather than by luck.
+.env
+.env.*
+!.env.example
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+
+# Virtual environments
+.venv/
+venv/

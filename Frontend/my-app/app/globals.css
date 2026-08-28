@@ -1,26 +1,308 @@
 @import "tailwindcss";
 
+/* Theme is driven by data-theme on <html> (set before paint in layout.tsx),
+   falling back to the OS preference. Keeps `dark:` utilities working while
+   still allowing a manual toggle. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --canvas: #f3f5fa;
+  --canvas-glow: #dfe7ff;
+  --surface: #ffffff;
+  --surface-2: #f7f9fd;
+  --surface-3: #eef2f9;
+  --line: #e2e8f2;
+  --line-strong: #c9d3e5;
+
+  --ink: #0c1220;
+  --muted: #57617a;
+  --faint: #8b95ab;
+
+  --brand: #2f5cff;
+  --brand-strong: #1d3fd6;
+  --brand-ink: #1e40d8;
+  --brand-soft: #eef2ff;
+  --accent: #7c3aed;
+
+  --ok: #0d9f6e;
+  --ok-ink: #04795a;
+  --ok-soft: #e6f8f1;
+  --warn: #d97706;
+  --warn-ink: #92500e;
+  --warn-soft: #fff8ed;
+  --danger: #dc2626;
+  --danger-ink: #b01c1c;
+  --danger-soft: #fef2f2;
+
+
+
+  --code-bg: #0b1020;
+  --code-ink: #cbd5f5;
+
+  --ring: color-mix(in oklab, var(--brand) 45%, transparent);
+  --shadow-soft: 0 1px 2px rgb(15 23 42 / 0.05), 0 8px 24px -12px rgb(15 23 42 / 0.15);
+  --shadow-lift: 0 2px 4px rgb(15 23 42 / 0.06), 0 18px 40px -20px rgb(15 23 42 / 0.35);
+}
+
+[data-theme="dark"] {
+  --canvas: #080b12;
+  --canvas-glow: #16204a;
+  --surface: #0f141f;
+  --surface-2: #131a27;
+  --surface-3: #1a2334;
+  --line: #212b3d;
+  --line-strong: #33405a;
+
+  --ink: #e9edf7;
+  --muted: #9aa5bd;
+  --faint: #74809a;
+
+  --brand: #5b7fff;
+  --brand-strong: #7d99ff;
+  --brand-ink: #a9bcff;
+  --brand-soft: #16203c;
+  --accent: #a78bfa;
+
+  --ok: #34d399;
+  --ok-ink: #6ee7b7;
+  --ok-soft: #0e2a22;
+  --warn: #fbbf24;
+  --warn-ink: #fcd34d;
+  --warn-soft: #2a1f0c;
+  --danger: #f87171;
+  --danger-ink: #fca5a5;
+  --danger-soft: #2b1214;
+
+
+  --code-bg: #070a12;
+  --code-ink: #c3cfe8;
+
+  --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px -12px rgb(0 0 0 / 0.7);
+  --shadow-lift: 0 2px 4px rgb(0 0 0 / 0.5), 0 18px 40px -20px rgb(0 0 0 / 0.9);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+
+  --color-brand: var(--brand);
+  --color-brand-strong: var(--brand-strong);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-soft: var(--brand-soft);
+  --color-accent: var(--accent);
+
+  --color-ok: var(--ok);
+  --color-ok-ink: var(--ok-ink);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-ink: var(--warn-ink);
+  --color-warn-soft: var(--warn-soft);
+  --color-danger: var(--danger);
+  --color-danger-ink: var(--danger-ink);
+  --color-danger-soft: var(--danger-soft);
+
+
+  --color-code-bg: var(--code-bg);
+  --color-code-ink: var(--code-ink);
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+html {
+  color-scheme: light;
+  scroll-behavior: smooth;
+  /* Every size in the UI is in rem, so this one value scales type, spacing and
+     container widths together on large monitors. */
+  font-size: 16px;
+}
+
+@media (min-width: 1536px) {
+  html {
+    font-size: 17px;
   }
 }
 
+@media (min-width: 1920px) {
+  html {
+    font-size: 18px;
+  }
+}
+
+@media (min-width: 2560px) {
+  html {
+    font-size: 19px;
+  }
+}
+
+/* One step below text-xs. Registered in a plain @theme (not @theme inline) on
+   purpose: that emits `font-size: var(--text-2xs)` into the utility, which is
+   what lets .type-up below override it. An inline theme would bake the literal
+   value in and the override would silently do nothing. */
+@theme {
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: calc(1 / 0.6875);
+}
+
+/* Orchestrator page only (app/page.tsx) - the one screen someone sits and reads
+   while filling the form, so its type runs a notch larger than the rest of the
+   UI. Tailwind's line heights are unitless ratios, so overriding the font sizes
+   alone keeps every line height in proportion. One number to tune: --type-up. */
+.type-up {
+  --type-up: 1.0625;
+  --text-2xs: calc(0.6875rem * var(--type-up));
+  --text-xs: calc(0.75rem * var(--type-up));
+  --text-sm: calc(0.875rem * var(--type-up));
+  --text-base: calc(1rem * var(--type-up));
+  --text-lg: calc(1.125rem * var(--type-up));
+  --text-xl: calc(1.25rem * var(--type-up));
+  --text-2xl: calc(1.5rem * var(--type-up));
+  --text-3xl: calc(1.875rem * var(--type-up));
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--brand) 28%, transparent);
+}
+
+*:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+/* ---------- decorative surfaces ---------- */
+
+/* Multi-hue bloom behind the hero areas. */
+.bg-aurora {
+  background-image:
+    radial-gradient(48rem 26rem at 10% -15%, color-mix(in oklab, var(--brand) 26%, transparent) 0%, transparent 62%),
+    radial-gradient(40rem 22rem at 88% 0%, color-mix(in oklab, var(--accent) 22%, transparent) 0%, transparent 60%);
+}
+
+/* Thin colour bar used on top of cards / sections. */
+.rule-brand {
+  background-image: linear-gradient(90deg, var(--brand), var(--accent));
+}
+
+/* Faint blueprint grid — reads as "technical" without adding noise. */
+.bg-blueprint {
+  background-image:
+    linear-gradient(to right, color-mix(in oklab, var(--line) 70%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--line) 70%, transparent) 1px, transparent 1px);
+  background-size: 34px 34px;
+  mask-image: radial-gradient(70% 60% at 50% 0%, #000 0%, transparent 75%);
+}
+
+.text-gradient {
+  background: linear-gradient(100deg, var(--brand) 0%, var(--accent) 60%, var(--brand) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ---------- scrollbars ---------- */
+
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 999px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+}
+
+/* ---------- motion ---------- */
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes sheen {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--brand) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-sheen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 35%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, white 55%, transparent),
+    transparent
+  );
+  animation: sheen 1.8s ease-in-out infinite;
+}
+
+.animate-pulse-ring {
+  animation: pulse-ring 1.8s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .animate-fade-up,
+  .animate-sheen::after,
+  .animate-pulse-ring {
+    animation: none;
+  }
 }

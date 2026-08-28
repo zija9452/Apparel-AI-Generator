@@ -1,0 +1,186 @@
+PLACKET-MATCH v2 - status as of 2026-07-22 (continue from here 2026-07-23)
+================================================================
+
+KYA BANA AJ (poora rewrite done, automate_production.jsx me):
+- User ne apna manual Illustrator SOP explain kiya tha (pattern copy, zero-gap
+  front-left/front-right, scale-to-height, seam-crossing graphic cut/reflect/
+  paste, 2.25in overlap simulate karke center, dono panels me alag clip) -
+  isko poori tarah code kiya, PURANA "Match_" line-based vertical-drop model
+  hata diya.
+- Sirf FULL_BUTTON checkbox on hone par chalta hai, baki code untouched.
+
+NAYE FUNCTIONS (automate_production.jsx me, PLACKET-MATCH v2 helpers section):
+  pmDecideBiggerSide, pmTotalFilledArea, pmAlignAndScaleToHeight, pmSeamX,
+  pmCollectSeamArt, pmProcessPanel, pmJoinPanels, pmRemoveOwnSeamArt,
+  pmClipIntoPanel
+
+DO BUGS MILE OR FIX HUE (job 5d6c57c1... par verify kiya, working):
+1. Panel A (bigger side) decide karne wala area-formula galat tha - base-path
+   (dono taraf same/mirror shape) count ho raha tha, TextFrame count nahi ho
+   raha tha - is se real difference chhup jata tha. FIX: base-path/"remove"
+   exclude, TextFrame area include - ab Front-Right sahi se bara nikalta hai.
+2. Panel B (chota side) ka apna PURANA seam-crossing graphic (jo usne khud
+   independently draw kiya tha) delete nahi ho raha tha jab nayi
+   corrected copy clip hoti thi - is se DUPLICATE/GHOST logo dikh raha tha.
+   FIX: pmRemoveOwnSeamArt() - dono panels ka apna purana content pehle
+   remove karta hai, phir corrected shared copy clip hoti hai.
+   Job 5d6c57c1 par dono fix confirmed working (clean, no duplicate).
+
+AJ KA PENDING ISSUE (job 4591a9e1-5aa6-42d9-9b0b-0f3848828e63):
+- Isi job me (2 front items hain - number 32 aur number 24, dono XL size) -
+  PEHLA front-pair (number 32) sahi chala.
+- DUSRA front-pair (number 24) me guard trigger hua:
+  "PLACKET-MATCH WARNING: XL Front: centering correction (-729.2mm) exceeds
+  50% of the panel width - shared graphic left at its natural position"
+  Matlab: dusre pair ke liye computed centering shift bohot bara/ghalat aya
+  (-729mm), guard ne usay reject kar diya (graphic apni "natural" [uncorrected]
+  jagah reh gaya - shayad thoda off-center hoga, check karna hai).
+- Root cause abhi tak pata nahi chala. Diagnostic logging add ki thi
+  (pmJoinPanels ke andar, dx/outerA/outerB/combinedCenterX print karne ke
+  liye) taake pata chale dusre pair ke liye numbers kahan se ghalat aa rahe
+  hain - possible cause: pehla pair Panel A/B decide hone ke baad kuch
+  reference dusre pair me galat carry ho raha ho, ya dusre pair ki
+  baseShape/pastedPattern position kisi wajah se mismatch ho rahi ho.
+- Job dobara chalaya diagnostics ke sath, LEKIN Illustrator COM error aya:
+  "Error: (-2147417851, 'The server threw an exception.', None, None)"
+  kyunke maine khud manually is job ke pattern.ai/mockup.ai/
+  production_ready_order.ai (crashed/incomplete run ke) Illustrator me khole
+  hue the inspection ke liye jab dobara job trigger hua - conflict ho gaya.
+- User ne ye files close karne se MANA kiya (samajh nahi tha ye files kis
+  purpose ke liye khuli hain / kya close karna safe hai) - isliye abhi kuch
+  close nahi kiya.
+
+KAL SE YAHAN SE CONTINUE KARNA HAI:
+1. Pehle check karo Illustrator me abhi bhi ye 3 documents khule hain kya:
+   production_ready_order.ai (unsaved, is job ka crashed/partial run),
+   pattern.ai (saved), mockup.ai (unsaved) - sab job 4591a9e1 folder se.
+   Agar khule hain, user se confirm karke close karo (ye automation ke apne
+   crashed-run artifacts hain, user ka manual kaam nahi - safe hona chahiye,
+   lekin user se ek dafa zaban se confirm le lena).
+2. Job 4591a9e1 ko phir se /jobs/resume/{job_id} (action: "continue") se
+   re-run karo, taake diagnostic logs (PM-DIAG lines, abhi tak jsx me maujood
+   hain, HATAYE nahi gaye) is baar chal kar debug_log.txt me numbers de den.
+3. debug_log.txt me "PM-DIAG" grep karo, dusre front-pair (number 24) ke
+   liye outerA/outerB/sewnOuterB/combinedCenterX/gB/curCenterX/dx dekho,
+   pehle pair (number 32, jo sahi chala) se COMPARE karo - farq dhoondo.
+4. Root cause samajh kar fix karo, phir dobara test karo (dono pairs sahi
+   aane chahiye, koi warning nahi).
+5. Fix confirm hone ke baad, pmJoinPanels se diagnostic log line (PM-DIAG
+   wali) HATA dena - wo temporary hai.
+
+FILES:
+- Backend/scripts/automate_production.jsx - saara PLACKET-MATCH v2 code +
+  abhi diagnostic log line (PM-DIAG) maujood hai pmJoinPanels ke andar.
+- C:\Users\scb\.claude\plans\buzzing-brewing-dawn.md - poora design plan
+  (approved) is feature ka, reference ke liye.
+
+================================================================
+UPDATE 2026-07-23 (naya session, same din continue) - PENDING TESTS KAL KE LIYE
+================================================================
+Test job jo use hua: f5ed2936-79ee-45a1-b4d9-fd40606086cc
+(Backend/uploads/f5ed2936-79ee-45a1-b4d9-fd40606086cc)
+
+AJ 6 NAYE FIXES automate_production.jsx me huye hain. In sab ka STATUS:
+
+1. SHOULDER-MATCH (naya feature, full-button jersey only) - DONE + TESTED OK
+   - Front-Left ke apne "Match_" shape ka shoulder-tip-se-crossing-point
+     tak horizontal distance measure karta hai (pmMeasureShoulderTarget).
+   - Back ke apne match-shape ko usi distance ke barabar proportionally
+     resize karta hai (secant iteration, pmApplyBackShoulderMatch).
+   - Front-Left aur Front-Right dono ka number match kiya (-150.2mm dono),
+     symmetry confirmed. Back resize exact target tak converge hua (2
+     steps me, 107%).
+   - PENDING: user ne khud Illustrator me Ctrl+Y se Front-Right ko Back
+     ke right side rakh kar FINAL visual confirm karna hai (gap band ho
+     gaya ya nahi) - maine sirf numbers/JPG se verify kiya hai.
+   - Functions: pmMeasureShoulderTarget, pmApplyBackShoulderMatch,
+     pmFindTopCrossingX, pmSamplePathItem, pmSampleItemPolylines,
+     pmScaleMatchItems, pmCombinedBounds (PLACKET-MATCH v2 helpers section
+     ke end me).
+
+2. FULL-BUTTON Back panel scaling - DONE (untested visually but low-risk)
+   - Back ab bhi Front (Left/Right) jaisi uniform height-driven scale
+     (pmAlignAndScaleToHeight) use karta hai, purani independent-stretch
+     (alignAndScale) ki jagah - line ~452/489 "isBack(item.part_name)".
+
+3. PATTI sibling-fill - DONE + TESTED OK
+   - "patti" (button-strip, 2 pieces same panel) ab "placket" jaisa hi
+     fillSiblingPlacementPaths() use karta hai - line ~405.
+   - Debug log confirm: "Also filled 1 sibling panel piece(s)..."
+
+4. SLEEVE TAG GARBLING - ABHI BHI OPEN / FIX ADHURA HAI
+   - Symptom: sleeve tag box me garbled overlapping text dikhta hai
+     ("MexLARGEeft"/"MexLARGEight" jaisa).
+   - Pehla fix (renameSizeTags ko "medium" jaise size-words match karne
+     dena, sirf current job's sizeLabel nahi) - GALAT JAGAH thi search,
+     isliye kaam nahi kiya (warning abhi bhi aati hai: "no 'XL' tag text
+     found").
+   - ASAL ROOT CAUSE: "Medium Left"/"Medium Right" text MOCKUP ke pasted
+     DESIGN ke andar hi ek stray/leftover text object hai (pastedDesign
+     me, renameSizeTags to sirf pastedPattern search karta hai - GALAT
+     container). Debug log: "DEBUG TEXT: Checking 'Medium Left' for
+     fillColor" isi ko confirm karta hai.
+   - YE ABHI FIX NAHI HUI - kal isko dekhna hai: ya to is stray text ko
+     design paste ke baad DETECT+REMOVE karna hoga (jaise removeNamedItems
+     karta hai "remove"-named items ke liye), ya user se puchna hai ke
+     kya ye text hamesha isi pattern se aata hai (size + opposite-side,
+     e.g. Right sleeve me "...Left" wala text) taake generic rule bana
+     saken.
+
+5. SLEEVE RED LINE (rib/cuff) chhoti/misaligned - FIX DONE, RE-TEST PENDING
+   - Root cause #1: direct `.width=`/`.height=` assignment PathItem par -
+     flat/zero-height line ke liye "Unknown scripting error" deta tha,
+     is wajah se Right sleeve ki red line stretch hi nahi hoti thi.
+     FIX: .resize() use kiya (zero-height guard ke sath) - line ~522.
+   - Root cause #2 (ye test ke DAURAN pakda gaya, is fix ke baad): rib-path
+     DETECTION heuristic pastedDesign ke apne bounds par depend karta tha
+     (jo Left [pura logo] aur Right [sirf 2 lines] ke liye alag hote
+     hain) - is wajah se same red line Left par "nahi mili" (0 paths,
+     reposition kabhi chala hi nahi) aur Right par "mil gayi" (2 paths,
+     reposition chala) - dono alag Y-height par aa gaye (65px gap,
+     measured). FIX: ab baseShape.geometricBounds use karta hai (stable,
+     dono sides ke liye same) - line ~504.
+   - PENDING: fix #2 (baseShape wala) ABHI TAK KISI TEST RUN ME NAHI
+     CHALA - kal fresh job run kar ke confirm karna hai ke:
+     (a) red line ab dono sides FULL WIDTH tak reach karti hai (fix #1
+         already confirmed via pixel-crop measurement is session me), AUR
+     (b) Left aur Right dono ki line ab SAME Y-height par hain (gap khatam)
+     (c) user ne bola tha ye formula-based position "test print" se bhi
+         match honi chahiye - abhi sirf Left/Right EK DUSRE se match
+         karte hain, test-print ke actual reference se compare NAHI kiya
+         gaya - agar user test-print ka exact measurement de sake to
+         verify karna.
+
+6. WHITE-BOX LOGO (Back ka badge/logo faded/gray dikhta tha) - FIX DONE,
+   BILKUL UNTESTED
+   - Pehla hypothesis (linked/PlacedItem missing-link) GALAT nikla -
+     embedPlacedItems() ne 0 items embed kiye, koi asar nahi hua.
+   - Real root cause (COM inspection se confirm): raster already EMBEDDED
+     hai (RasterItem, PlacedItem nahi), lekin uska imageColorSpace =
+     "Indexed" hai (limited-palette format) - CMYK order doc me export
+     hote waqt palette resolve nahi hoti, isliye faded/grey box dikhta
+     hai.
+   - FIX: naya function fixIndexedRasters() - Indexed RasterItem ko
+     document.rasterize() se doc ke apne CMYK color model me dobara
+     bake karta hai (RasterizeOptions, RasterizationColorModel.
+     DEFAULTCOLORMODEL). Call sites embedPlacedItems() ke turant baad
+     dono jagah (line ~391, ~583).
+   - PENDING: is fix ka koi bhi test run NAHI hua - kal sabse pehle isko
+     test karna hai (job re-run + Back JPG ka logo area crop kar ke dekho
+     ke ab colorful/sahi logo aata hai ya abhi bhi faded box).
+
+KAL SABSE PEHLE YE KARNA HAI:
+1. Illustrator free/idle hai confirm karo (Get-Process check), fir job
+   f5ed2936 ko /jobs/resume (action: continue) se re-run karo.
+2. debug_log.txt me grep karo: "SHOULDER-MATCH", "sibling panel piece",
+   "could not align rib", "Re-rasterized", "Error in instance".
+3. XL_Back_Item1.jpg ka logo-area crop kar ke dekho (Python/Pillow already
+   installed backend venv me) - fixIndexedRasters kaam kiya ya nahi.
+4. Dono sleeve JPGs ka red-line Y-position pixel-measure karo (numpy se,
+   is session me jo script likha tha wahi reuse karo) - Left/Right barabar
+   height par hain ya nahi.
+5. Sleeve tag garbling (#4 upar) - ye abhi tak UNSOLVED hai, isko properly
+   diagnose/fix karna hai (pastedDesign ke andar stray text dhoondo).
+6. Sab confirm hone ke baad, temporary SHOULDER-MATCH-DIAG log lines
+   (agar ab bhi chahiye na ho) clean up karne ka sochna - abhi rehne do,
+   useful hain.

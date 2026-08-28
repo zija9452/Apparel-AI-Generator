@@ -1,88 +1,162 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import UploadForm from "@/components/UploadForm";
 import ProductionPlan from "@/components/ProductionPlan";
+import AgentStatus from "@/components/AgentStatus";
+import AppHeader from "@/components/AppHeader";
+import { Icon } from "@/components/ui";
+import type { JobResult } from "@/components/types";
 
-export default function Home() {
-  const [jobResult, setJobResult] = useState<any>(null);
+const STEPS = [
+  {
+    step: "01",
+    title: "Upload data",
+    desc: "Order Excel, design mockup (.ai) and the master pattern (.ai).",
+    icon: <Icon.Upload className="h-4 w-4" />,
+  },
+  {
+    step: "02",
+    title: "AI analysis",
+    desc: "Excel columns are mapped to the mockup's layers and sizes.",
+    icon: <Icon.Spark className="h-4 w-4" />,
+  },
+  {
+    step: "03",
+    title: "Production plan",
+    desc: "A machine-readable JSON plan is generated and shown below.",
+    icon: <Icon.Sheet className="h-4 w-4" />,
+  },
+  {
+    step: "04",
+    title: "Illustrator render",
+    desc: "Every piece is built, matched, laid out and exported print-ready.",
+    icon: <Icon.Layers className="h-4 w-4" />,
+  },
+];
+
+export default function Orchestrator() {
+  const [jobResult, setJobResult] = useState<JobResult | null>(null);
+  // Illustrator builds one order at a time (the backend enforces this with a
+  // 409); the form mirrors it so the button is visibly unavailable rather than
+  // failing after an upload.
+  const [jobRunning, setJobRunning] = useState(false);
+  const planRef = useRef<HTMLDivElement>(null);
+
+  // Bring the status panel into view the moment a job starts, since the form
+  // is long and the progress bar is otherwise below the fold.
+  useEffect(() => {
+    if (jobResult?.job_id) {
+      planRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [jobResult?.job_id]);
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 pb-20">
-      {/* Header */}
-      <header className="bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 py-6">
-        <div className="max-w-5xl mx-auto px-6 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="bg-blue-600 p-2 rounded-lg">
-              <svg 
-                xmlns="http://www.w3.org/2000/svg" 
-                width="24" height="24" 
-                viewBox="0 0 24 24" fill="none" 
-                stroke="white" strokeWidth="2.5" 
-                strokeLinecap="round" strokeLinejoin="round"
-              >
-                <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                <path d="M18.375 2.625a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4Z" />
-              </svg>
-            </div>
-            <div>
-              <h1 className="text-xl font-black tracking-tight text-zinc-900 dark:text-white uppercase">
-                Apparel AI <span className="text-blue-600">Generator</span>
-              </h1>
-              <p className="text-xs font-medium text-zinc-500 uppercase tracking-widest">Production Orchestrator v1.0</p>
-            </div>
+    <div className="type-up min-h-screen">
+      <AppHeader active="app" />
+
+      <main className="mx-auto max-w-7xl px-5 pb-24 pt-10">
+        <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-black tracking-tight text-ink sm:text-3xl">
+              New production job
+            </h1>
+            <p className="mt-1.5 text-sm text-muted">
+              Attach the three files, tick what this order needs, and start the run.
+            </p>
           </div>
-          
-          <nav className="hidden md:flex items-center gap-6">
-            <span className="text-sm font-medium text-zinc-400">Documentation</span>
-            <span className="text-sm font-medium text-zinc-400">Settings</span>
-            <div className="h-4 w-px bg-zinc-200 dark:bg-zinc-800" />
-            <button className="text-sm font-bold text-zinc-900 dark:text-white">Sign Out</button>
-          </nav>
         </div>
-      </header>
 
-      {/* Main Content */}
-      <main className="max-w-5xl mx-auto px-6 pt-12">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
-          
-          {/* Left Column: Instructions */}
-          <div className="lg:col-span-4 space-y-8">
-            <section>
-              <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-widest mb-4">Workflow</h3>
-              <ul className="space-y-4">
-                {[
-                  { step: "01", title: "Upload Data", desc: "Select your Excel orders and AI templates." },
-                  { step: "02", title: "AI Analysis", desc: "Agent maps Excel columns to Illustrator layers." },
-                  { step: "03", title: "Generate Plan", desc: "A machine-readable production JSON is created." },
-                  { step: "04", title: "Illustrator Render", desc: "Run the JSX script to generate production assets." }
-                ].map((item) => (
-                  <li key={item.step} className="flex gap-4">
-                    <span className="text-blue-600 font-black italic">{item.step}</span>
-                    <div>
-                      <p className="text-sm font-bold text-zinc-800 dark:text-zinc-200">{item.title}</p>
-                      <p className="text-xs text-zinc-500">{item.desc}</p>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </section>
+        <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
+          {/* Left rail */}
+          <aside className="lg:col-span-4">
+            <div className="space-y-6 lg:sticky lg:top-24">
+              <section>
+                <h2 className="mb-4 text-xs font-bold uppercase tracking-[0.18em] text-faint">
+                  How a job runs
+                </h2>
+                <ol className="relative space-y-5 border-l border-dashed border-line pl-6">
+                  {STEPS.map((s) => (
+                    <li key={s.step} className="relative">
+                      <span
+                        className="absolute -left-[34px] flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-brand to-accent text-white shadow-[var(--shadow-soft)]"
+                      >
+                        {s.icon}
+                      </span>
+                      <p className="flex items-baseline gap-2 text-sm font-semibold text-ink">
+                        <span className="font-mono text-xs text-faint">{s.step}</span>
+                        {s.title}
+                      </p>
+                      <p className="mt-0.5 text-xs leading-relaxed text-muted">{s.desc}</p>
+                    </li>
+                  ))}
+                </ol>
+              </section>
 
-            <div className="p-4 bg-zinc-100 dark:bg-zinc-900 rounded-lg border border-zinc-200 dark:border-zinc-800">
-              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-tighter mb-2">System Status</p>
-              <div className="flex items-center gap-2">
-                <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
-                <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">FastAPI Backend: Online</span>
+              <Link
+                href="/docs"
+                className="group flex items-start gap-3 rounded-2xl border border-line bg-surface p-4 shadow-[var(--shadow-soft)] transition-colors hover:border-brand/50"
+              >
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-brand to-accent text-white">
+                  <Icon.Book className="h-4 w-4" />
+                </span>
+                <span>
+                  <span className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+                    Production handbook
+                    <Icon.Arrow className="h-3.5 w-3.5 text-brand transition-transform group-hover:translate-x-0.5" />
+                  </span>
+                  <span className="mt-0.5 block text-xs leading-relaxed text-muted">
+                    Nine chapters: required layer names, every option, and what each one does.
+                  </span>
+                </span>
+              </Link>
+
+              <Link
+                href="/order-guide"
+                className="group flex items-start gap-3 rounded-2xl border border-line bg-surface p-4 shadow-[var(--shadow-soft)] transition-colors hover:border-brand/50"
+              >
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-linear-to-br from-brand to-accent text-white">
+                  <Icon.Book className="h-4 w-4" />
+                </span>
+                <span>
+                  <span className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+                    Order Excel guide
+                    <Icon.Arrow className="h-3.5 w-3.5 text-brand transition-transform group-hover:translate-x-0.5" />
+                  </span>
+                  <span className="mt-0.5 block text-xs leading-relaxed text-muted">
+                    Which columns to keep, how logos are named, and a downloadable template.
+                  </span>
+                </span>
+              </Link>
+
+              <div className="rounded-2xl border border-line bg-surface-2 p-4">
+                <p className="flex items-center gap-2 text-xs font-bold text-ink">
+                  <Icon.Clock className="h-3.5 w-3.5" />
+                  Before you press start
+                </p>
+                <ul className="mt-2 space-y-1.5 text-xs leading-relaxed text-muted">
+                  <li>Keep Illustrator closed, the job opens and drives it itself.</li>
+                  <li>Layer names in the mockup must match exactly what each option asks for.</li>
+                  <li>A full order can take 10 to 15 minutes, the progress bar keeps updating.</li>
+                </ul>
               </div>
             </div>
-          </div>
+          </aside>
 
-          {/* Right Column: Interactive Area */}
+          {/* Work area */}
           <div className="lg:col-span-8">
-            <UploadForm onPlanGenerated={setJobResult} />
-            <ProductionPlan plan={jobResult} />
+            {/* Ahead of the form on purpose: if the agent is not running or
+                this browser is not paired, nothing below can work, and the
+                designer should learn that before attaching three files. */}
+            <div className="mb-5">
+              <AgentStatus />
+            </div>
+            <UploadForm onPlanGenerated={setJobResult} jobRunning={jobRunning} />
+            <div ref={planRef} className="scroll-mt-24">
+              <ProductionPlan plan={jobResult} onRunningChange={setJobRunning} />
+            </div>
           </div>
-
         </div>
       </main>
     </div>

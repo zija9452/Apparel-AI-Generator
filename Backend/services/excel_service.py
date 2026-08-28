@@ -1,7 +1,64 @@
 import pandas as pd
 import io
 import json
-from typing import Dict, Any, List
+import re
+from typing import Dict, Any, List, Optional, Tuple
+
+# ---------------------------------------------------------------------------
+# Generic personalization columns: "<Part> <Field>" e.g. "Front Name",
+# "Back Number", "Left Sleeve Number", "Sleeve Number" (= both sleeves),
+# "Neck Name", "Back Logo". A bare field column ("Name", "Number") has no
+# explicit part; the plan builder routes it (name -> front, number -> back
+# default, same value on every personalized part when ambiguous).
+# NOTE: a bare "Sleeve" column is the sleeve-LENGTH column (Half/Full),
+# never personalization - a personalization column must END in a field word.
+# ---------------------------------------------------------------------------
+
+def _match_personalization_column(col: str) -> Optional[Tuple[Optional[str], str]]:
+    """Returns (part, field) for a personalization column, else None.
+    part is None for bare/unprefixed columns like 'Name' or 'Player Number'."""
+    c = str(col).lower().strip()
+    if not c or "unnamed" in c:
+        return None
+    tokens = [t for t in re.split(r"[\s_\-.]+", c) if t]
+    if not tokens:
+        return None
+    last = tokens[-1]
+    if last == "name":
+        field = "name"
+    elif last in ("number", "num", "no", "#"):
+        field = "number"
+    elif last == "logo":
+        field = "logo"
+    else:
+        return None
+
+    prefix = " ".join(tokens[:-1])
+    if not prefix:
+        return (None, field)
+
+    if "sleeve" in prefix:
+        if "left" in prefix:
+            part = "sleeve-left"
+        elif "right" in prefix:
+            part = "sleeve-right"
+        else:
+            part = "sleeve-both"
+    elif "front" in prefix:
+        part = "front"
+    elif "back" in prefix:
+        part = "back"
+    elif "neck" in prefix or "collar" in prefix:
+        part = "neck"
+    else:
+        # Unknown prefix ('Player Name', 'Jersey Number'): treat as a bare
+        # field, but ONLY for full words. Short aliases with a random prefix
+        # ('Sr No', 'S.No') are serial columns, not player numbers.
+        if last in ("num", "no", "#"):
+            return None
+        return (None, field)
+    return (part, field)
+
 
 def parse_order_excel(file_content: bytes) -> Dict[str, Any]:
     """
@@ -25,12 +82,14 @@ def parse_order_excel(file_content: bytes) -> Dict[str, Any]:
             found = True
             break
     
+    # dtype=str: keep every cell EXACTLY as written in Excel. Without it pandas
+    # coerces mixed columns to numbers, silently turning a text "05" cell into 5.
     if not found:
         # Fallback to first row but this will likely fail the 'size' check
-        df = pd.read_excel(excel_file, sheet_name=orders_sheet)
+        df = pd.read_excel(excel_file, sheet_name=orders_sheet, dtype=str)
     else:
         # Re-read from the detected header row
-        df = pd.read_excel(excel_file, sheet_name=orders_sheet, skiprows=header_idx)
+        df = pd.read_excel(excel_file, sheet_name=orders_sheet, skiprows=header_idx, dtype=str)
     
     # Standardize column names
     df.columns = [str(col).lower().strip() for col in df.columns]
@@ -43,45 +102,96 @@ def parse_order_excel(file_content: bytes) -> Dict[str, Any]:
         detected = ", ".join(cols)
         raise ValueError(f"Excel must have a 'Size' column. Detected columns: [{detected}]")
     
-    # 2. Handle 'Name' (Optional)
-    if 'name' in cols:
-        df['name'] = df['name'].fillna('').astype(str)
-    else:
-        df['name'] = '' # Create empty column if missing
+    # 2. Detect all personalization columns generically: "<Part> <Field>".
+    # First matching column wins for each (part, field) slot.
+    pers_cols: Dict[Tuple[Optional[str], str], str] = {}
+    for c in cols:
+        m = _match_personalization_column(c)
+        if m and m not in pers_cols:
+            pers_cols[m] = c
 
-    # 3. Handle 'Number' (Optional) - Prioritize 'number' over 'no'
-    number_col = next((c for c in cols if c in ['number', 'no', 'num']), None)
-    if number_col:
-        def format_num(x):
-            if pd.isna(x): return ""
-            # Handle float like 1.0 -> 1 -> "01"
-            try:
-                if isinstance(x, (int, float)):
-                    val = int(x)
-                    return str(val).zfill(2) if val < 10 else str(val)
-                val = str(x).strip()
-                if val.isdigit() and len(val) == 1:
-                    return "0" + val
-                return val
-            except:
-                return str(x)
-        df['number'] = df[number_col].apply(format_num)
-    else:
-        df['number'] = ''
+    # Numbers print EXACTLY as the Excel cell shows them: numeric 5 -> "5",
+    # text '05 -> "05" (leading zeros need a text cell; Excel numeric cells
+    # strip them before we ever see the value). No padding is added here.
+    def format_num(x):
+        if pd.isna(x): return ""
+        try:
+            if isinstance(x, (int, float)):
+                # numeric cells surface as floats (5 -> 5.0); Excel shows 5
+                return str(int(x)) if float(x) == int(x) else str(x)
+            s = str(x).strip()
+            # with dtype=str a numeric cell can surface as "5.0"; Excel shows 5.
+            # Text cells like "05" have no ".0" suffix and pass through untouched.
+            if s.endswith(".0") and s[:-2].isdigit():
+                s = s[:-2]
+            return s
+        except:
+            return str(x).strip()
 
-    # 4. Handle 'Sleeve' (Optional)
+    def format_text(x):
+        if pd.isna(x): return ""
+        return str(x).strip()
+
+    def cell_value(row, key):
+        col = pers_cols.get(key)
+        if not col:
+            return ""
+        v = row[col]
+        return format_num(v) if key[1] == "number" else format_text(v)
+
+    # 3. Legacy flat fields (kept for the LLM agent and _enforce_personalization):
+    # 'name'/'number' = front column, else bare column; back fields stay explicit.
+    def legacy_key(part, field):
+        return (part, field) if (part, field) in pers_cols else (None, field)
+
+    name_key = legacy_key("front", "name")
+    number_key = legacy_key("front", "number")
+
+    # 4. Handle 'Sleeve' (Optional) - sleeve LENGTH (Half/Full), not personalization
     if 'sleeve' in cols:
         df['sleeve'] = df['sleeve'].fillna('Half').apply(lambda x: str(x).strip().capitalize())
     else:
         df['sleeve'] = 'Half'
-    
-    # Standardize to our internal names for grouping
-    # (Only keep the columns we need to prevent grouping issues)
-    df_clean = df[['name', 'number', 'size', 'sleeve']].copy()
-    
-    # Grouping logic
-    grouped = df_clean.groupby(['name', 'number', 'size', 'sleeve']).size().reset_index(name='quantity')
-    raw_orders = grouped.to_dict(orient="records")
+
+    # Normalize size strings (Excel cells often carry trailing spaces e.g. 'Medium ')
+    df['size'] = df['size'].fillna('').astype(str).str.strip()
+
+    # Build one record per row, then group identical prints.
+    # 'personalization' carries EVERY detected column per part; bare columns
+    # land under part "unspecified" for the plan builder to route.
+    group_map: Dict[str, Dict[str, Any]] = {}
+    group_order: List[str] = []
+    for _, row in df.iterrows():
+        size = str(row['size']).strip()
+        if not size:
+            continue  # blank/spacer rows in the sheet
+
+        personalization: Dict[str, Dict[str, str]] = {}
+        for (part, field), col in pers_cols.items():
+            val = cell_value(row, (part, field))
+            if val:
+                personalization.setdefault(part or "unspecified", {})[field] = val
+
+        rec = {
+            "name": cell_value(row, name_key),
+            "back_name": cell_value(row, ("back", "name")),
+            "number": cell_value(row, number_key),
+            "back_number": cell_value(row, ("back", "number")),
+            "size": size,
+            "sleeve": str(row['sleeve']),
+            "personalization": personalization,
+        }
+        gkey = json.dumps(
+            [rec["size"], rec["sleeve"], rec["personalization"]],
+            sort_keys=True,
+        )
+        if gkey not in group_map:
+            rec["quantity"] = 0
+            group_map[gkey] = rec
+            group_order.append(gkey)
+        group_map[gkey]["quantity"] += 1
+
+    raw_orders = [group_map[k] for k in group_order]
     
     # 2. Process Color Mapping
     color_mapping = {}
@@ -171,10 +281,14 @@ def parse_order_excel(file_content: bytes) -> Dict[str, Any]:
             break
 
     # Summary for AI Agent (Sending ALL unique combinations now)
+    # The 'personalization' dict is NOT sent to the LLM yet: the agent's
+    # instructions and the JSX only consume the legacy flat fields. It rides
+    # along in raw_orders for the deterministic plan builder (Phase 4).
+    llm_orders = [{k: v for k, v in o.items() if k != "personalization"} for o in raw_orders]
     summary = (
         f"Project Title: {project_title}\n"
-        f"Total Unique Combinations (Name+Number+Size+Sleeve): {len(raw_orders)}\n"
-        f"Full Order List: {json.dumps(raw_orders)}\n"
+        f"Total Unique Combinations (Name+BackName+Number+BackNumber+Size+Sleeve): {len(raw_orders)}\n"
+        f"Full Order List: {json.dumps(llm_orders)}\n"
         f"Color Mapping: {json.dumps(color_mapping)}"
     )
     

@@ -1,0 +1,9 @@
+# Everything the agent needs, and nothing else.
+#
+# Note what is NOT here: no pandas, no openai/agents SDK, no Gemini client.
+# Excel parsing and planning happen in the cloud, so a designer's PC never
+# installs them and never holds an API key.
+fastapi>=0.141.1
+uvicorn>=0.52.4
+pywin32>=312
+python-multipart>=0.0.32

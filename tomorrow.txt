@@ -406,3 +406,336 @@ ________________________________________________________________________________
 
   Aap ab run karenge to logs mein >>> [COLOR: FILL] Re-applied: SpotColor (Royal Blue) jaisa message aayega, jo confirm
   karega ke linking "Official" method se hui hai.
+
+
+  You can use /undo to undo and discard each aider commit.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Backend\scripts\automate_production.jsx
+> kia update krna he , or ye kia fix kre ga ??
+
+The update I provided in the previous step addresses the issue where "Number" customization was incorrectly linking to the MOCK_ (RGB) swatches instead of the intended CMYK swatches from your Excel data.
+
+What was updated:
+
+I modified the replaceInContainer function within Backend\scripts\automate_production.jsx.
+
+What this fixes:
+
+When the script replaces text (like a player's number), it tries to re-apply the original color style. Previously, it was saving the color name with the MOCK_ prefix (e.g., MOCK_NumberColor). When it tried to re-apply that color to the
+new document, it looked for a swatch named MOCK_NumberColor. Since your production document only contains the "Official" CMYK spots (without the MOCK_ prefix), the lookup failed.
+
+The fix:
+
+I added a fallback mechanism in the replaceInContainer function. Now, if the script fails to find the exact swatch name (with the MOCK_ prefix), it automatically strips the MOCK_ prefix and attempts to find the "Official" CMYK swatch
+name instead. This ensures that the text correctly links to your Excel-defined CMYK colors.
+
+Here is the file with the fix applied:
+
+Backend\scripts\automate_production.jsx
+
+
+
+
+
+
+
+
+https://claude.ai/code/artifact/6dbd1bb9-cbf4-4f99-a1ac-f5569b51e83d
+
+https://claude.ai/code/artifact/fbdae0c5-cf04-4f28-a195-f6b5689d2b68
+
+https://claude.ai/code/artifact/16f0d8c1-d191-4001-bd96-9e339e28b7ee
+
+https://claude.ai/code/artifact/f16f02ea-f54c-4fa2-ace8-3a6068e4874f?via=auto_preview
+
+
+════════════════════════════════════════════════════════════════════════════
+2026-08-03 SESSION SUMMARY — Backend/scripts/automate_production.jsx
+════════════════════════════════════════════════════════════════════════════
+
+✅ DONE / FIXED (applied to real automate_production.jsx):
+
+1. SIZE-TAG offset: FULL_BUTTON aur NORMAL JERSEY dono ke label-position
+   offsets +1.5pt kiye (pehle +1pt, us se pehle base 2.5in/2in aur 2.5in/3in).
+
+2. PLACKET-MATCH hang (job de99d444) — ROOT CAUSE MILA + FIXED:
+   - pmDecideBiggerSide() job me pehli baar full-button PLACKET-MATCH trigger
+     hone par ek "area measurement" (getSourceView + pmTotalFilledArea walk
+     on mockupDoc) karta tha jo Medium Front-Right ke baad 10+ min tak hang
+     ho jata tha — jabke isolated/fresh test me wahi walk sirf 65-150ms leta
+     hai. Illustrator ki "heavy state" (3 docs open, orderDoc me kaafi
+     content already ban chuka) me yehi simple walk drastically slow ho jata
+     hai.
+   - FIX: area-measurement disable kar diya, ab hamesha Front-Left = Panel A
+     (fixed/hardcoded) — user-approved ("koi mushkil nahi aani").
+   - Reproduce + confirm dono scratchpad me hue (hardcoded version turant
+     nikal gaya, koi hang nahi).
+   - Real backend se bhi test job (bdb72d8d) chala — successfully complete
+     hua, "PLACKET-MATCH: Panel A (source side) = Front-Left (fixed)."
+
+3. Color-linking SLOWNESS fix (4-5 min per Front-Left/Front-Right panel):
+   - Root cause: deepReLink() har single path (Pattern group ke 1123+ dots
+     samet) ke liye logPathColor() call karta tha, jo har baar debug_log.txt
+     ko open/write/close karta (file I/O), ~2000+ baar per panel.
+   - FIX: logPathColor() function + uske saare calls (deepReLink ke andar)
+     completely hata diye. applySpot() (asal color-relink logic) untouched.
+
+⚠️ MISSING-PARTS ISSUE (confirmed, fix NOT yet applied):
+   - Job de99d444 ka pattern.ai me 3XL size ka koi bhi part (Front Left/
+     Right/Back/Neck/Sleeve/Patti) mojood nahi tha — sab "CRITICAL: Could
+     not find" ho kar silently skip ho gaye, job ke end tak pata hi nahi
+     chalta.
+   - User ka request: job START hone se PEHLE hi check ho aur bata diya
+     jaye agar koi size/part pattern.ai me missing hai (jaisa
+     _mockup_has_pattern_object/_mockup_has_size_tag_elements pre-flight
+     pehle se karte hain illustrator_automation.py me).
+   - PENDING — abhi tak sirf discuss hua hai, implement nahi hua.
+
+🔬 Y-AXIS PATTERN MATCH (Front ko Back ke Pattern se vertically match karna) —
+   ABHI TAK BROKEN, teen attempts scratchpad me (real file me kuch nahi
+   gaya):
+   1. Attempt 1 (% of panel height): Back's Pattern 252% down panel nikla,
+      70.263in ka shift — bakwaas (Pattern deliberately oversized hota hai
+      panel se, is wajah se % blow up hota hai).
+   2. Attempt 2 (absolute distance from hem, raw Pattern bounds): -56.87in
+      above hem, 73.379in shift — phir bhi bakwaas.
+   3. Attempt 3 (clip-based — sirf VISIBLE/clipped portion measure karna,
+      raw oversized bounds nahi): -23.84in above hem, guard (1x panel
+      height) ne is baar shift ko block kar diya (koi wrong shift apply
+      nahi hui, pattern natural position pe reh gaya) — lekin measurement
+      abhi bhi galat/implausible hai.
+   - NEXT STEP (jahan session chhoda): visually confirm karna hai ke Back
+     ka "Pattern" naam wala object (jo user ne SCR.ai me manually add kiya)
+     asal me apne panel ke saath geometrically overlap karta bhi hai ya
+     nahi — ho sakta hai clip-setup me koi bug ho (pageItems.length >= 2
+     verify nahi kiya tha clip lagane se pehle) YA Back ka Pattern object
+     data hi aisi jagah/scale par hai ke woh apne panel se match hi nahi
+     karta.
+   - X-axis (Front-Left <-> Front-Right seam continuity, pmStripeSeamShift)
+     bilkul theek/working hai — sirf Y-axis (Front ko Back se match) wala
+     naya feature abhi incomplete/disabled hai.
+
+📂 Scratchpad diagnostic scripts (agar dobara chahiye ho):
+   - automate_production_ymatch.jsx — Y-match wala instrumented copy
+     (pmPeekBackPatternY/pmMatchPatternYToBack functions yahan hain, real
+     file me nahi)
+   - rerun_diag.py + diag_bundle.jsx — job ko scratchpad me fast/isolated
+     test karne ka harness (koi bhi pattern.ai/mockup.ai/plan.json point
+     kiya ja sakta hai)
+   - Test files: E:\Testing order\File\Full button jersey\SCR\SCR.ai
+     (mockup, jisme Back par "Pattern" naam add kiya gaya) + "Full button
+     Patterns Updated as jersey.ai" (pattern file)
+   - NOTE: yeh sab Temp\claude\...\scratchpad\ folder me hain jo session-
+     specific hai — agli session me shayad dobara banane padein.
+
+KAL KA KAAM (pending, priority order):
+   1. Y-axis Pattern-match ka bug fix karna (clip-overlap visually verify
+      karke, phir sahi anchor/logic decide karna)
+   2. Missing-size/part pre-flight validation add karna (job start se
+      pehle warn kare)
+   3. (Optional) Y-match agar fix ho jaye to real automate_production.jsx
+      me apply karna + full end-to-end test
+
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+🧵 SLEEVE-MATCH (ARMHOLE SIDE SLEEVE MATCHING) — MAJOR SESSION, bahut kaam
+hua real automate_production.jsx me (sab already file me hain, koi bhi
+scratchpad-only nahi is baar). Original complaint: XL/Medium Short Sleeve
+render me white stripe uneven thi (ek side moti, ek patli), aur sleeve-match
+warnings me units "could not reach target D" / "does not reach the seam"
+fail ho rahe the with ZERO progress.
+
+✅ FIXES JO REAL FILE ME LAG CHUKE HAIN (sab automate_production.jsx me):
+   1. Sleeve ka 6% width "bleed" hataya (alignAndScale) — sleeves ab
+      Front/Back jaisa normal fit hote hain.
+   2. Ribbon (Outline-Stroke/Expand se bana 2-rail compound path) detection:
+      _smIsRibbonUnit/_smRibbonGap — rail-to-rail width nikalta hai.
+      smApplyRibbonGap — Sleeve ki ribbon width ko Front ke reference gap
+      ke barabar lock karta hai.
+   3. EVEN-ODD COVERAGE FIX (bada bug tha): pehle compound path ka sirf
+      sabse bada sub-path solid fill maan liya jata tha (galat "reach"
+      detect hoti thi). Ab _smItemSubPolys/_smPolysOf/_smInAny asal
+      Illustrator even-odd fill rule use karte hain.
+   4. VISIBLE-COVERAGE / OCCLUSION FIX (sabse bada bug, customer ne khud
+      pakड़a): koi unit "reach" tabhi maana jata hai jab uska apna shape
+      kisi doosre (z-order me aage waale) shape ke neeche na dabaa ho.
+      _smFlattenZOrder/_smOccludersOf/_smOcclusionPad/_smVisibleInAny —
+      "base-path" (reference shape) explicitly excluded (khud ek false
+      occluder ban raha tha). Ye tumhare manual pen-tool measurement
+      (126.63mm) se match ho gaya tha — validated.
+   5. NAME-BASED MATCHING (dusra bada bug): pehle Front/Sleeve ke units
+      "distance-sort se position 1,2,3" ke hisaab se match hote the — Front
+      aur Sleeve ki apni shape alag hone ki wajah se GALAT unit se GALAT
+      unit match ho raha tha (Front ka ribbon, Sleeve ke plain path se!).
+      Ab seedha real mockup NAME se match hota hai (unit1<->unit1,
+      unit2<->unit2, etc.) — smMeasureBodyD ab `sleeveMatchD[size].byName`
+      (object, naam-keyed) store karta hai, positional array nahi.
+   6. LEFT-ANCHORED + NO-HORIZONTAL (continuous units ke liye): jin units
+      me left/right tagging nahi hai (mockup me sirf "unit1" jaisa naam),
+      unke liye kabhi bhi horizontal (left-right) move nahi hoti — sirf
+      vertical (up/down) + proportional resize. Continuous unit ek hi
+      rigid piece hai dono corners cross karta hai, isliye LEFT corner ko
+      target karke poori piece move/resize hoti hai, RIGHT apne aap
+      consistent aa jata hai (mirror-guaranteed by construction).
+   7. TAGGED UNITS (jin ka naam "unit left 1"/"unit right 1" ho) ke liye
+      ALAG priority: pehle LEFT/RIGHT try, phir UP/DOWN, phir RESIZE
+      (_smSolveUnit ka naya `allowHorizontal` parameter — true tagged ke
+      liye, false/undefined continuous ke liye).
+   8. PROBE-BASED SOLVE (Newton-extrapolation ki jagah): pehle ek chhota
+      2pt probe se Newton step calculate hota tha jo bade residual (jaise
+      ribbon-gap resize ke baad 45mm) par badly wrong direction/size de
+      deta tha. Ab REAL trial steps (dono directions, ya priority-ordered
+      X-then-Y agar allowHorizontal) try hote hain, jo residual sabse zyada
+      kam kare wahi commit hota hai — coarse binary-search jaisa, iteration
+      har baar residual ke hisaab se shrink hota hai.
+   9. OCCLUDED-UNIT FALLBACK: agar khud unit move karne se D par koi asar
+      nahi (occluded hai), to uske OCCLUDER (jo shape usse cover kar raha
+      hai) ko move karte hain instead — wahi visible boundary control karta
+      hai. Occluders area ke hisaab se sort (bada pehle) karke try hote
+      hain.
+  10. BEST-EFFORT (revert-to-nothing ka purana bug fix): pehle solve fail
+      hone par POORI tarah revert ho jata tha (chahe raste me improvement
+      hui ho) — "kuch bhi kaam nahi hua" jaisa dikhta tha. Ab bestLen/
+      checkpoint/undoOp/stepAndMeasure ke through sirf sabse behtar state
+      tak hi unwind hota hai, poori tarah original tak nahi.
+  11. RESCUE (first-contact fallback): agar unit bilkul shuru se hi seam ko
+      chhoo nahi raha (initial check fail), to turant give up nahi karta —
+      chhote se badhte hue steps me BOTH directions try karta hai (agar
+      allowHorizontal to left/right pehle, phir up/down) jab tak contact na
+      ho jaye ya guard limit (30% panel height) na aa jaye.
+  12. Spot-color relink (applySpot/processSubColor) ke SUCCESS/APPLIED log
+      spam hataye — sirf WARNING/CRITICAL/FALLBACK reh gaye hain.
+
+📊 TEST RESULT (E:\Testing order\File\WAIALUA\Ai.ai + Pattern.ai, XL size,
+disposable temp-doc me — asal files kabhi touch/save nahi hui):
+   Front targets: unit1=158.4mm, unit2=151.2mm(ribbon gap 8.8mm),
+   unit3=14.4mm, unit4=5.3mm(ribbon gap 8.8mm)
+   Sleeve result (fix #6-11 lagne ke baad): SAB 4 UNITS MATCHED —
+   unit1=158.5mm, unit2=151.1mm, unit3=15.1mm, unit4=5.8mm (rescue se,
+   46.3mm upward search karke).
+
+⚠️ PENDING (yahi session chhoda gaya tha):
+   - Fix #7 (allowHorizontal/tagged-unit priority) lagane ke TURANT BAAD
+     WAIALUA XL test dobara chalaya tha taake confirm ho ke kuch tootا
+     nahi — test tool-error se cut ho gaya, result nahi mila. YE SABSE
+     PEHLE KARNA HAI: dobara chalao aur confirm karo ke sab 4 units
+     abhi bhi match ho rahe hain (continuous unit hai is design me,
+     allowHorizontal=false hi lagna chahiye tha, to result same aana
+     chahiye — lekin verify zaroor karo).
+   - "overlap after independent matching" warnings abhi bhi aati hain
+     (sab units ek doosre ko overlap kar rahe hain occlusion-layered
+     design ki wajah se) — check karna hai ye sirf informational hai ya
+     real problem.
+   - Real job (backend se, sirf test-script se nahi) abhi tak nahi
+     chalayi is session ke fixes ke saath — asal job-run se confirm
+     karna baaki hai (Medium/XL dono, kam se kam ek real customer
+     mockup ke saath).
+   - Left/right TAGGED case (fix #7) kabhi test nahi hui — is session ke
+     dono test files (job 4cbbd1eb, WAIALUA) dono continuous hain
+     ("unit1" naam, koi "unit left 1" nahi). Agar kabhi tagged design
+     mile to priority-order (left/right -> up/down -> resize) verify
+     karna hoga.
+
+📂 Scratchpad test harness (session-specific, agli session me dobara
+banana pad sakta hai):
+   - measure_units.py + jsx_lib.txt — occlusion-aware read-only D
+     measurement (mockup.ai ke apne "base-path" shape se, resize/move
+     nahi karta)
+   - test_solve.py + jsx_extra.txt/jsx_extra2.txt + sm_block.txt — poora
+     REAL solve test: pattern.ai ka asal panel + mockup.ai ka design,
+     disposable temp doc me duplicate karke alignAndScale + smMeasureBodyD
+     + smApplySleeveMatch (asal functions, automate_production.jsx se
+     seedha extract kiye - lines 2479 se "end SLEEVE-MATCH helpers"
+     marker tak) chalata hai. sm_block.txt HAR BAAR real file se dobara
+     extract karna padta hai jab bhi automate_production.jsx edit ho
+     (`sed -n '2479,<end-line>p' automate_production.jsx > sm_block.txt`).
+   - Test files: uploads/4cbbd1eb-.../pattern.ai+mockup.ai (Medium/XL,
+     job jisme sab shuru me diagnose hua) aur
+     E:\Testing order\File\WAIALUA\Ai.ai + Pattern.ai (XL, jahan sab 4
+     units match hue).
+
+KAL KA KAAM (sleeve-match, priority order):
+   1. WAIALUA XL test dobara chalao, allowHorizontal fix ke baad confirm
+      karo sab 4 units abhi bhi match ho rahe hain.
+   2. Real backend job chalao (Medium + XL) is design ke saath, confirm
+      karo render me white stripe ab uniform/symmetric hai.
+   3. "overlap" warnings ki wajah samajhna/fix karna (agar zaroori ho).
+
+════════════════════════════════════════════════════════════════════════════
+2026-08-11 SESSION SUMMARY — HOODIE POCKET clip bug (Backend/scripts/automate_production.jsx)
+════════════════════════════════════════════════════════════════════════════
+
+🐞 ISSUE (user report, job 608252d8):
+   - 2XL_Pocket.jpg (aur Small_Pocket.jpg, XL_Pocket.jpg - sab sizes me same
+     bug) me export "ulta" tha: pocket ki apni chhoti outline shape ke bajaye
+     POORA Front ka body-shape (neckline, armholes, hem - poora torso) aur
+     uska design background me unclipped dikh raha tha. Design (dice
+     graphic) pocket ki asal shape se bahar (right/bottom edge se) overflow
+     kar raha tha, aur ek dot to pure shirt ke bahar (white background) tak
+     nikal gaya tha.
+   - User ka mutalba clear tha: Front ka design pocket ke pattern outline
+     KE ANDAR hi clip hona chahiye - jitna pocket ki shape hai bas utna hi
+     dikhna chahiye, is se zyada kuch nahi.
+
+🔬 DEEP ANALYSIS (kya-kya check kiya, taake blind guess na ho):
+   1. debug_log.txt (usi job ke renders folder me) check kiya - Hood aur
+      Border ke liye "HOODIE: <Size> ... - clipping mask active." log line
+      maujood thi, lekin Pocket ke liye ye line SIRE SE MISSING thi (sirf
+      "HOODIE: 2XL Pocket built and exported." tha, koi clip-success
+      confirmation nahi) - pehla clue ke clip apna kaam nahi kar raha.
+   2. Live Illustrator instance (jo pehle se open tha) se COM automation
+      (win32com, jaisa illustrator_automation.py karta hai) se ek chhota
+      READ-ONLY diagnostic script likh kar chalaya - pattern.ai ko open
+      karke "2XL/XL/Small Pocket" groups ka poora structure (har child
+      path/group ka naam, type, bounds) print karwaya, phir document band
+      kar diya BINA KUCH SAVE KIYE (asal files ko haath tak nahi lagaya).
+   3. Is se pata chala: Pocket ke apne outline path ka size 2XL me
+      1591x974pt (22.1in x 13.5in) hai - filled=true, stroked=true,
+      guides=false, hidden=false, locked=false - matlab ye ek GENUINE,
+      designer ne khud banayi hui shape hai (koi galti se copy-paste hui
+      reference/guide shape NAHI hai jaisa shuru me shak tha).
+   4. Root cause mila: hoodieBuildPocket() function Hood/Border wale PROVEN
+      clip-pattern (hoodiePasteDesign function) se ALAG tareeke se clip
+      laga raha tha - clipGroup ko orderDoc ka ek INDEPENDENT TOP-LEVEL
+      group bana kar (`orderDoc.groupItems.add()`), jabke Hood/Border me
+      clipGroup hamesha pattern piece ke APNE group KE ANDAR nest hota hai
+      (`patternSideShape.groupItems.add()`). Ye structural farq hi silent
+      clip-failure ki sabse mumkin wajah thi - is wajah se
+      `clipGroup.clipped = true` ka koi error to nahi aata tha, lekin
+      effectively kuch clip nahi hota tha, aur Front ka poora unclipped
+      body+design seedha render ho jata tha.
+
+✅ FIX APPLIED (automate_production.jsx, hoodieBuildPocket function):
+   - clipGroup ab dupPocket (pocket ke apne group) KE ANDAR banta hai -
+     Hood/Border wale exact proven recipe ki tarah (nesting + z-order same).
+   - `clipGroup.pageItems.length >= 2` guard add ki (Hood/Border me pehle
+     se thi, Pocket me missing thi).
+   - Explicit success log add ki: "HOODIE: <Size> Pocket - clipping mask
+     active." - aur agar guard fail ho to explicit warning:
+     "<Size> Pocket: clip group had too few items - design left unclipped."
+     - taake agli baar bhi agar kabhi fail ho to debug_log.txt me FORAN
+       pata chale, silently wrong export na nikle.
+   - Ek redundant wrapper group (`pocketFinal = orderDoc.groupItems.add()`)
+     hata diya - ab dupPocket khud hi pocketFinal hai (ek regrouping kam
+     hone se stale-bounds risk bhi thoda kam hua, jo comments me pehle se
+     documented tha).
+
+⚠️ PENDING - ABHI TAK VISUALLY VERIFY NAHI HUA:
+   - Ye fix sirf CODE LEVEL par apply hui hai. Real Illustrator job chala
+     kar render dobara dekhna baaki hai (is session me full automation run
+     nahi kiya - ~20-25 min leta hai).
+
+KAL KA KAAM (priority order):
+   1. Isi ya kisi bhi Hoodie+Pocket wale job ko dobara run karo, 2XL/XL/
+      Small Pocket renders check karo - confirm karo ke ab sirf pocket ki
+      apni chhoti shape ke andar hi design clip ho raha hai, poora front
+      body/design bahar nahi aa raha.
+   2. debug_log.txt me har size ke liye
+      "HOODIE: <Size> Pocket - clipping mask active." line dikhni chahiye.
+      Agar iski jagah "clip group had too few items" warning aaye to
+      further investigate karna hoga.
+   3. Agar clip ab bhi thoda overflow kare (edge case), to pocket ka
+      outline path (2XL me 22.1in x 13.5in nikla, kaafi bara hai - ek
+      normal chest-pocket se) designer se confirm karwana ke ye size
+      intentional hai (oversized kangaroo pocket design) ya pattern file
+      me galti se bara bana diya gaya.

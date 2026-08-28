@@ -1,0 +1,168 @@
+SIDE-ANCHOR + shoulder-band gap - status as of 2026-08-18 (continue from here 2026-08-19)
+=========================================================================================
+
+(Purani tomorrow.txt ko haath nahi lagaya - wo alag/purani file hai. Ye naya
+handoff note hai, tomorrow-23.txt wale format me.)
+
+
+AJ KYA BANA (sab commit-ready, tested)
+--------------------------------------
+
+1) NAYA FEATURE: SIDE-ANCHOR  (PHR 132)
+   Problem: height-only scaling design ka aspect ratio preserve karti hai, to
+   graded panel pe design ka silhouette panel se PATLA reh jata hai aur phir
+   center ho jata hai - is wajah se jo graphic mockup me side seam pe chipka
+   tha wo andar khisak kar panel ke beech me chhap raha tha.
+
+   Fix: Backend/scripts/automate_production.jsx -> anchorSideGraphicsToSeam()
+   (adjustSidePanelsToUnderarm ke bilkul neeche, wahi call-site window:
+   pmAlignAndScaleToHeight ke baad, removeBasePaths se PEHLE - base-path chahiye).
+
+       left seam  -> dx = panelLeft  - designSilhouetteLeft
+       right seam -> dx = panelRight - designSilhouetteRight
+
+   - Sirf horizontal MOVE. Na resize, na vertical change (vertical
+     adjustSidePanelsToUnderarm ka kaam hai). Kuch hardcode nahi - jo gap
+     naapa wahi correction, aur design panel se chaura ho to sign khud ulti
+     ho jati hai.
+   - NAAM: /^(side(left|right)?|(left|right)side)[0-9]*$/  (lowercase + non-
+     alphanumeric strip ke baad). Yani "side", "Side", "side 1", "Side Left",
+     "Left Side" chalega. Anchored regex jaan bujh kar hai taake shipped
+     "Front side match" / "Back side match" (SIDE-SEAM MATCH ke groups) kabhi
+     na pakde jayen - node harness se verify kiya.
+   - Group ko "side" naam do to wo POORA group ek unit ki tarah move hoga
+     (andar recurse nahi karta).
+   - Guards (har ek log karta hai): kisi seam ke paas nahi -> skip; dono
+     seams ko chhuta hai -> skip (move se theek nahi hoga, stretch chahiye);
+     full-button half ki PLACKET edge -> skip (Front-Left ki placket uski
+     RIGHT edge hai, wahi convention jo pmSeamX use karta hai); shift <1mm ->
+     kuch nahi; shift >15% panel width -> skip + WARNING. Aakhir me count
+     line, aur agar koi "side" naam mila hi nahi to wo bhi saaf likhta hai.
+   - Scope: sirf Front/Back (front-left/front-right bhi). Sleeve, Neck,
+     accessories, Hoodie hood/border - untouched.
+   - ExtendScript trap: `mm` aur regex FUNCTION KE ANDAR declare kiye hain,
+     file-scope pe nahi - main flow helpers se UPAR chalta hai, to file-scope
+     var wahan undefined hota (wahi hoisting rule jo patternSizeCache/
+     _nameIndexes pe already documented hai).
+
+2) FRONTEND OPTION BADLA
+   Frontend/my-app/components/UploadForm.tsx:
+   - "Height and width both scale" radio HATA diya.
+   - Uski jagah: "Height scales proportionally, sides kept perfect"
+     (value="height_sides").
+   Backend/main.py: design_scale_mode ab ("height_sides","both") else "height"
+   pe normalize hota hai. "both" form pe nahi hai lekin agar seedha post ho to
+   ab bhi chalega (purani stored plan re-run ke liye).
+   NOTE: "both" ki LOGIC code se delete NAHI ki - alignAndScale waisa ka waisa
+   hai, aur Neck to har setting me usi stretch fit se chalta hai (edge-to-edge
+   strip). User ne pucha tha, confirm kiya tha.
+
+3) FRONTEND LABEL ME LAYER NAAM LIKHA
+   "Front/Back design Stripes match" (full_button_front_back_match) ke
+   description me ab likha hai ke shape ka naam "Match_" se shuru hona chahiye,
+   aur wo Front Left AUR Back dono me hona chahiye (Front Left naapa jata hai,
+   Back adjust hota hai). Naam na ho to job chalti rehti hai, bas Back ko haath
+   nahi lagta - iska koi pre-flight nahi hai (Pattern/side-match ka hai).
+
+   Tests jo pass hue: node --check (jsx), npx tsc --noEmit (frontend),
+   py_compile (main.py), naam-collision regex harness.
+
+
+LIVE JOB PE VERIFY (job 2b17c990-0316-4b74-ad8e-b50595eb3e2c)
+-------------------------------------------------------------
+design_scale_mode = height_sides, full_button_jersey = true,
+center_match = true, front_back_match = true. 5 sizes.
+
+SIDE-ANCHOR ne theek kaam kiya, log se:
+   XL     front-left/right : 'Side' moved 10.3mm
+   2XL    front-left/right : 'Side' moved 13.2mm
+   Large  front-left/right : 'Side' moved  4.8mm
+   Medium front-left/right : 'Side' moved  2.3mm
+   Small  front-left/right : already within 1mm - nothing to move
+   Back panels pe 2-2 'side' items, wahi trend (XL 24.1mm, 2XL 30.5mm).
+User ne khud confirm kiya: "side panel to perfect he, attach top se".
+
+
+KAL KA ASLI ISSUE - SHOULDER BAND (yahi se shuru karna hai)
+------------------------------------------------------------
+User ne XL_Front_Right_Item1.jpg pe complain kiya: "ye top se q hta he design,
+ye to mockup me fix tha" - matlab kandhe wali PEELI PATTI panel ke top edge se
+neeche khisak gayi hai, uske upar kaali gap dikh rahi hai. Small pe bilkul
+flush hai, XL/2XL pe saaf dikhti hai.
+
+DIAGNOSIS (naap kar, andaza nahi - PIL se renders measure kiye):
+
+  a) Height scaling BILKUL SAHI hai. "Sports" block har size pe panel ke top
+     se theek 17.96-17.99% pe hai aur panel height ka 31.94-31.99% ghera hai:
+        Small 0.1796/0.3199 | Medium 0.1799/0.3194 | Large 0.1798/0.3198
+        XL    0.1798/0.3196 | 2XL    0.1799/0.3197
+     Yani Back-driven shared scale (pmPeekFullButtonScale, XL=110.2%) bhi
+     galat nahi hai - front ka height fit har size pe identical baith raha hai.
+
+  b) Masla WIDTH ka hai. Proportional scale design ko panel ki chaudai tak
+     nahi kheench sakti, to design silhouette panel ke andar reh jata hai -
+     wahi number jo SIDE-ANCHOR log karta hai:
+
+        size    design har taraf andar    band ke upar kaali gap (80% width pe)
+        Small        0.0mm                        1.4mm   (= sirf outline stroke)
+        Medium       2.3mm                        2.1mm
+        Large        4.8mm                        5.3mm
+        XL          10.3mm                        7.8mm
+        2XL         13.2mm                       10.2mm
+
+     (gap 60%/70%/80% width pe linearly barhti hai - XL: 3.2/5.3/7.8mm -
+     matlab design ka top edge aur panel ka top edge ka SLOPE bhi alag ho
+     gaya hai, sirf end pe shortfall nahi hai.)
+
+  c) Nateeja: shoulder band bhi design ka hissa hai, to wo panel ke shoulder
+     tip tak nahi pahunchti. Shoulder dhalwan line hai, isliye horizontal
+     shortfall upar kaali wedge ban kar dikhta hai. Side stripe isliye theek
+     hai kyunke usay "side" naam mil gaya aur SIDE-ANCHOR ne bahar dhakel diya.
+     Ye SIDE-ANCHOR ka side-effect NAHI hai - same root cause, alag jagah.
+
+USER SE POOCHA HUA SAWAL (abhi jawab NAHI aya - iske bagair implement mat karna):
+  Option 1 (recommended): band ko bhi naam do (e.g. "shoulder"), aur us EK item
+    ko sirf horizontally stretch karo - andar wala sira (placket/neck) pinned,
+    bahar wala sira panel ke kinare tak. Band plain patti hai to distortion
+    nazar nahi aayega, aur baaki design bilkul untouched rahega.
+  Option 2: poore front design ko width me bhi panel tak stretch (purana
+    "both"). Sab bhar jayega lekin "Sports" text aur logo bhi chaude ho jayenge.
+  Sath me ye bhi poocha: agar Option 1, to naam "shoulder" theek hai ya koi aur?
+
+AGAR OPTION 1 CHUNA JAYE - IMPLEMENTATION NOTES (pehle se soch liya hai):
+  - Jagah wahi rakhna: anchorSideGraphicsToSeam ke pass, usi call-site window
+    me (base-path abhi tak zinda hai wahan).
+  - Naam ka regex bhi anchored rakhna, aur pehle se maujood naamon se clash
+    check karna (jaise "side match" ke sath kiya tha).
+  - Stretch = width-only resize; anchor point item ka andar wala sira ho
+    (Transformation.LEFT / RIGHT, is baat pe depend karta hai ke Front-Left hai
+    ya Front-Right - placket kis taraf hai, pmSeamX wali convention use karna).
+  - Wahi guards dohrana: 15%-of-panel-width cap, aur har skip log karna.
+  - Test: usi job (2b17c990) ke mockup/pattern se dobara chala kar,
+    upar wali table ka "band ke upar kaali gap" column dobara naapna -
+    har size pe ~1.4mm (sirf stroke) aana chahiye.
+
+
+CHHOTI BAATEIN / PENDING
+------------------------
+- adjustSidePanelsToUnderarm is job me zyada tar skip hua:
+  "UA-DETECT [panel]: WARNING - left/right underarm heights differ (308pt)"
+  front-left/front-right pe har size pe. Wajah samajh me aati hai (full-button
+  half panel ka ek hi asli side seam hota hai, dusri taraf placket hai - to
+  left/right underarm barabar ho hi nahi sakte). Ye pehle se aisa hai, aaj ka
+  regression nahi, lekin kabhi dekhna chahiye - full-button halves pe ye check
+  shayad skip hona chahiye bajaye warning dene ke.
+- "Front/Back design Stripes match" (Match_) ka koi pre-flight nahi hai.
+  User ko offer kiya tha ke laga dun - jawab nahi aya.
+- Hoodie ke 3 artboard/export sites ko snapPieceToItsSlot/fitArtboardToPanel
+  nahi diya gaya (alag code path) - ye pehle se pending sawal hai, user ne
+  kabhi jawab nahi diya. Bagair poochhe shuru mat karna.
+
+
+CHANGED FILES (aaj)
+-------------------
+  Backend/scripts/automate_production.jsx   (SIDE_ANCHOR flag + anchorSideGraphicsToSeam + 2 call sites)
+  Backend/main.py                           (design_scale_mode normalization)
+  Frontend/my-app/components/UploadForm.tsx (height_sides radio, Match_ label text)
+  history/prompts/production_automation/131-side-graphic-anchor-to-seam.plan.prompt.md
+  history/prompts/production_automation/132-side-anchor-height-sides-mode.green.prompt.md
