@@ -201,11 +201,17 @@ All in the scratchpad, run with `Backend\.venv\Scripts\python.exe`:
    `powershell -File Agent\build-agent-package.ps1 -ForWebsite`, then commit it
    and redeploy the frontend.
 
-   | Change this | Rebuild the zip? |
-   |---|---|
-   | `automate_production.jsx` (most changes land here) | **No** — the agent fetches it per job |
-   | `illustrator_automation.py` | Yes, and designers restart the agent |
-   | `Agent/main.py`, its routes or dependencies | Yes, and designers reinstall |
+   | Change this | Rebuild the zip? | Redeploy Cloud Run? |
+   |---|---|---|
+   | `automate_production.jsx` (most changes land here) | **No** — the agent fetches it per job | **Yes** — it is served from the image's `scripts/` |
+   | `Backend/main.py`, `excel_service.py` | No | Yes |
+   | `illustrator_automation.py` | Yes, and designers restart the agent | Yes |
+   | `Agent/main.py`, its routes or dependencies | Yes, and designers reinstall | No |
+
+   The JSX row changed when the cloud went live. It used to be served by the
+   local backend, so a JSX edit needed nothing; now it comes from Cloud Run,
+   and skipping the redeploy leaves every designer on the previous render
+   logic with nothing to indicate it.
 
    The zip is how the agent gets ONTO a PC in the first place; auto-update only
    refreshes one that is already there. Both are needed. A stale zip fails
