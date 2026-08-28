@@ -85,7 +85,7 @@ into, or is shared with, the agent, so it was fixed once rather than twice):
 
 | | What | Note |
 |---|---|---|
-| ⬜ | **Cloud API deployed** | `POST /plan` exists and works locally. Still to do: strip `/jobs/*` from the cloud copy, add auth, write a Dockerfile, deploy, get the URL |
+| ✅ | **Cloud API deployed — 2026-08-28** | `https://apparel-cloud-api-434863957551.asia-south1.run.app` · project `gen-lang-client-0222340998` · region asia-south1 (Mumbai, nearest to Pakistan) · 1 GiB, min-instances 0, max 4. Verified live: `/health` reports `cloud-plan-only`, `/plan` 401s without the key, `/jobs/*` 404, `/automation/manifest` serves the JSX hashes. Redeploy with `Backend\deploy-cloudrun.ps1 -ProjectId gen-lang-client-0222340998` |
 | ⬜ | **Frontend deployed to Vercel** | Then put that origin into the agent's `AGENT_ALLOWED_ORIGINS` (the default already lists `apparel-ai-generator.vercel.app`) and the cloud's CORS |
 | 🟡 | **End-to-end test** | **Passed locally on 2026-08-28** — `Local_test_Agent`: browser → cloud `/plan` → agent `/jobs` → Illustrator → SSE → 15 MB zip, 5 sizes, `PARM: no PARM errors in this job`. That was a small order through the whole new path. Still owed: a full-size order, and the same run against the deployed cloud and Vercel rather than localhost |
 | ⬜ | **`https://` → `http://localhost` proved on the real site** | The mechanism was proved on 2026-08-27 from `https://example.com`; not yet from Vercel |
@@ -98,6 +98,65 @@ guard would only cover one of the two. An interrupted job is already survivable:
 the slot lives in memory, so a restarted agent reports itself free, and the
 half-finished folder is left in `C:\Production` for the designer to delete. Do
 not reopen this without a reason that is not "it was on the list".
+
+### The repo was rewritten on 2026-08-28
+
+`git push` was impossible: `Backend/apparel_sessions.db` had reached **1.1 GB**
+and sat in three commits, and `Backend/uploads/` held a 145 MB `.ai` and six
+~20 MB order zips. GitHub refuses any file over 100 MB, so the old commits
+could not be pushed at all — not even after deleting the file today.
+
+`git filter-repo` removed `apparel_sessions.db*`, `Backend/uploads/` and any
+`.env` from **all** history, and `main` was force-pushed.
+
+| | Before | After |
+|---|---|---|
+| `.git` | 3.0 GB | 2.8 MB |
+| commits | 33 | 35, all messages kept |
+| largest file | 774 MB | 1.31 MB |
+
+Everything stayed on disk — `Backend/.env` and the 1.1 GB database were only
+untracked, never deleted. A copy of the old `.git` is at
+`../AI-Apparel-Order-Generator.git-backup` (3 GB); delete it once the remote
+looks right.
+
+**Consequences to know about.** Every commit hash changed, so an existing
+clone elsewhere cannot pull — it must be re-cloned. `SQLiteSession` is imported
+in `Backend/main.py` but no longer used; the database it wrote is now ignored
+and can be deleted.
+
+### What deploying to Cloud Run actually cost, and the traps in it
+
+Free every month: Cloud Build 2,500 build-minutes, Cloud Run 2M requests /
+360,000 GB-s / 180,000 vCPU-s, Artifact Registry 0.5 GB. This workload uses a
+few percent of those. Two things are **not** free and are worth knowing:
+
+- **Cloud Storage's 5 GB free tier is US-only** (`us-east1`, `us-west1`,
+  `us-central1`). The staging bucket is in asia-south1, so it is billed — at
+  0.86 MB per deploy that is fractions of a cent, and worth it against ~200 ms
+  of extra latency from a US region.
+- **Artifact Registry accumulates one image per deploy.** A cleanup policy is
+  now set on `cloud-run-source-deploy`: keep the last 3, delete anything older
+  than 7 days. Current size 113 MB compressed.
+
+**Billing was enabled on `gen-lang-client-0222340998`, which also owns the
+Gemini keys.** Google's own documentation is explicit that this moves a
+project from the Gemini free tier to the paid tier — "disable billing on each
+of your projects that you want to downgrade". Flash-lite is cheap and paid tier
+raises the rate limits considerably, so this is a fair trade, but it is a
+deliberate choice and not an accident. Deploying into a separate project would
+have kept the keys free.
+
+**Two traps that cost an hour each, so they are written down:**
+
+1. `gcloud run deploy --source` reads **`.gcloudignore`**, never
+   `.dockerignore`. Without one it uploads the entire source folder — here that
+   was the 1.1 GB database, `.venv`, every past order, and `.env`. Keep the two
+   ignore files in step.
+2. gcloud on Windows writes ordinary progress to **stderr**. Under
+   `$ErrorActionPreference = "Stop"` PowerShell treats each line as a
+   terminating error, and the deploy dies on a message that says "finished
+   successfully". Check `$LASTEXITCODE` instead.
 
 ### How to run it locally, right now
 
