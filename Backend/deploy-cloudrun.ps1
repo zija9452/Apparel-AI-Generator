@@ -56,13 +56,19 @@ if (-not (Test-Path -LiteralPath $EnvFile)) { Fail "Backend\.env not found - the
 # --- the API key ----------------------------------------------------------
 
 if (Test-Path -LiteralPath $KeyFile) {
-    $apiKey = (Get-Content -LiteralPath $KeyFile -Raw).Trim()
+    # utf-8-sig, not utf-8: an earlier version of this script wrote the file
+    # with a BOM, and a BOM in a secret is invisible right up until someone
+    # copies the file into Vercel and their own site starts answering 401.
+    $apiKey = ([IO.File]::ReadAllText($KeyFile, [Text.UTF8Encoding]::new($false))).Trim([char]0xFEFF, ' ', "`r", "`n", "`t")
     Write-Host "API key:  reusing the existing one from .cloud-api-key" -ForegroundColor DarkGray
 } else {
     $bytes = New-Object byte[] 32
     [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
     $apiKey = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
-    Set-Content -LiteralPath $KeyFile -Value $apiKey -Encoding utf8 -NoNewline
+    # WriteAllText with a BOM-less encoder. Set-Content -Encoding utf8 on
+    # Windows PowerShell 5.1 writes a BOM, which is exactly what must not
+    # happen to a value that gets copied by hand.
+    [IO.File]::WriteAllText($KeyFile, $apiKey, [Text.UTF8Encoding]::new($false))
     Write-Host "API key:  generated and saved to .cloud-api-key" -ForegroundColor Green
 }
 
@@ -87,10 +93,21 @@ $lines = foreach ($k in $envVars.Keys) { "${k}: `"$($envVars[$k])`"" }
 Set-Content -LiteralPath $envYaml -Value $lines -Encoding utf8
 
 try {
+    # gcloud on Windows is a PowerShell wrapper around python.exe, and it writes
+    # ordinary progress to stderr. Under ErrorActionPreference="Stop" PowerShell
+    # reads each of those lines as a terminating error and the deploy dies on a
+    # message that says "finished successfully". Exit codes are the truth here.
+    $ErrorActionPreference = "Continue"
+
     Write-Host ""
     Write-Host "Setting the project and enabling the APIs..." -ForegroundColor Cyan
-    gcloud config set project $ProjectId 2>&1 | Out-Null
-    gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com 2>&1 | Out-Null
+    gcloud config set project $ProjectId | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail "Could not select project '$ProjectId'." }
+
+    gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Fail "Could not enable the APIs. The usual cause is that billing is not linked to this project."
+    }
 
     Write-Host "Building and deploying - the first run takes several minutes..." -ForegroundColor Cyan
     gcloud run deploy $ServiceName `
@@ -111,7 +128,7 @@ try {
     Remove-Item -LiteralPath $envYaml -Force -ErrorAction SilentlyContinue
 }
 
-$url = (gcloud run services describe $ServiceName --region $Region --format="value(status.url)" 2>$null)
+$url = (gcloud run services describe $ServiceName --region $Region --format="value(status.url)")
 
 Write-Host ""
 Write-Host "Deployed." -ForegroundColor Green

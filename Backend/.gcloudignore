@@ -1,0 +1,41 @@
+# What `gcloud run deploy --source` uploads to Google Cloud Storage before the
+# build starts.
+#
+# THIS FILE IS NOT OPTIONAL, and .dockerignore does not stand in for it. gcloud
+# reads only this one. Without it the whole Backend folder goes up - the 1.1GB
+# session database, the .venv, every past order in uploads/, and .env with the
+# API keys in it. The first attempt at this deploy sat for twenty-five minutes
+# uploading exactly that, and never reached the build.
+#
+# Keep it in step with .dockerignore. The Dockerfile decides what lands in the
+# image; this decides what leaves the machine at all.
+
+# SECRETS - these must never reach a staging bucket.
+.env
+.env.*
+.cloud-api-key
+
+# Runtime state and job output.
+*.db
+*.db-wal
+*.db-shm
+uploads/
+Production testing files/
+
+# Local environment - hundreds of MB, and rebuilt inside the image anyway.
+.venv/
+__pycache__/
+*.py[cod]
+
+# An abandoned nested repo (Backend was its own git repo once - it still has a
+# .git pointing at 'master'). Nothing needs it, and a .git directory can carry
+# whatever its objects happen to hold.
+.git/
+
+# Not needed to build or run the service.
+docs/
+scripts/docs/
+uv.lock
+pyproject.toml
+deploy-cloudrun.ps1
+format.py
