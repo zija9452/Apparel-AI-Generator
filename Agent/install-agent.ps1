@@ -318,7 +318,22 @@ if (Test-Path $TokenPath) {
     Write-Host ""
     Write-Host "Opening the website and pairing this browser automatically..." -ForegroundColor Cyan
     Start-Process $pairUrl
-    Write-Host "Done. If the browser did not open, run this script with -ShowToken and paste it by hand."
+
+    # Start-Process opens the DEFAULT browser, and the pairing is stored in that
+    # browser's localStorage - which no other browser can read. Installing on a
+    # machine whose default is Edge therefore pairs Edge and leaves Chrome
+    # unpaired, looking for all the world like the install failed. So print the
+    # URL too: pasting one link into the browser they actually use is the whole
+    # fix, and it beats asking them to handle a raw token.
+    Write-Host ""
+    Write-Host "Paired the browser that just opened." -ForegroundColor Green
+    Write-Host ""
+    Write-Host "USING A DIFFERENT BROWSER? Paste this link into it, once:" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  $pairUrl" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Each browser pairs separately - the token lives in the browser, and"
+    Write-Host "one browser cannot read another's. Pairing lasts; do it once per browser."
 } else {
     Show-Token
     Write-Host ""

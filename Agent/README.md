@@ -28,6 +28,12 @@ run `install-agent.ps1 -ShowToken` and paste the token into the website once.
 
 From then on there is nothing to open and nothing to remember.
 
+**One browser at a time.** The installer opens your *default* browser and pairs
+that one. If your default is Edge but you work in Chrome, Chrome will still say
+the agent is not paired — that is not a failed install. The installer prints a
+pairing link at the end: paste it into whichever browser you actually use, once.
+Pairing is stored in the browser, and no browser can read another's.
+
 ---
 
 ## What you should know
