@@ -18,7 +18,43 @@ import os
 import secrets
 import shutil
 import sys
+import tempfile
 from typing import List, Optional
+
+# ---------------------------------------------------------------------------
+# NO CONSOLE, NO STREAMS.
+#
+# The scheduled task launches this with pythonw.exe so the designer never sees
+# a window they can close by accident. pythonw gives the process
+# sys.stdout = None - and the first print() below then raises AttributeError
+# and kills the agent before it ever listens on a port, writing nothing
+# anywhere. Started by hand with python.exe it works perfectly, which makes the
+# failure look like the Scheduled Task's fault. It is not.
+#
+# So: point both streams at a log file. The crash goes away and the designer
+# gains something they did not have before - a record of what the agent did.
+# ---------------------------------------------------------------------------
+LOG_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(), "AIApparelAgent"
+)
+LOG_PATH = os.path.join(LOG_DIR, "agent.log")
+
+if sys.stdout is None or sys.stderr is None:
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        # Uvicorn logs every request. Start a fresh file rather than growing one
+        # forever; 5MB is a long history of a machine that runs a few jobs a day.
+        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > 5 * 1024 ** 2:
+            os.replace(LOG_PATH, LOG_PATH + ".old")
+        _log_file = open(LOG_PATH, "a", encoding="utf-8", buffering=1)
+        sys.stdout = _log_file
+        sys.stderr = _log_file
+    except Exception:
+        # Nowhere to write is survivable; dying on the first print is not.
+        # os.devnull swallows the output and lets the agent come up.
+        _null = open(os.devnull, "w")
+        sys.stdout = _null
+        sys.stderr = _null
 
 # WHERE THE AUTOMATION LIVES - two layouts, one file.
 #
@@ -586,9 +622,16 @@ if __name__ == "__main__":
     print(f"  Orders go to   {PRODUCTION_DIR}")
     print(f"  Illustrator    {'found' if _illustrator_prog_ids() else 'NOT FOUND on this PC'}")
     print("-" * 68)
-    print("  Paste this pairing token into the website, once:")
-    print(f"\n     {AGENT_TOKEN}\n")
-    print(f"  (also saved in {TOKEN_PATH})")
+    # The token goes on screen only when there IS a screen. Under pythonw this
+    # output is a log file, and a log is the one thing people cheerfully email
+    # to someone else when they want help - the token must not ride along.
+    if sys.stdout is sys.__stdout__:
+        print("  Paste this pairing token into the website, once:")
+        print(f"\n     {AGENT_TOKEN}\n")
+        print(f"  (also saved in {TOKEN_PATH})")
+    else:
+        print(f"  Pairing token is in {TOKEN_PATH}")
+        print(f"  This output is the log at {LOG_PATH}")
     print("=" * 68)
     # Loopback ONLY. On 0.0.0.0 every machine on the office LAN could drive
     # this designer's Illustrator and read their files.
