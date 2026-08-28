@@ -62,7 +62,10 @@ into, or is shared with, the agent, so it was fixed once rather than twice):
 | ✅ | **Autostart** — Scheduled Task at logon, deliberately not a Windows Service | `Agent/install-agent.ps1` |
 | ✅ | **Zero-prerequisite install** — installs Python itself (winget, else the python.org per-user installer), then the packages and pywin32's COM registration; rejects the WindowsApps stub | same |
 | ✅ | **Right-click install** — the "Run with PowerShell" verb sets Process-scope Bypass itself, so no command line and no MOTW block; a `trap` + pause keeps the window open long enough to read a failure | `Agent/install-agent.ps1` |
-| ✅ | **Packaging** — 233 KB zip, no Gemini code, no key, no frontend | `Agent/build-agent-package.ps1` |
+| ✅ | **Survives having no console** — under `pythonw` both streams go to `%LOCALAPPDATA%\AIApparelAgent\agent.log`, rotated at 5 MB, falling back to `os.devnull`. The token is printed only to a real console, never into the log | `Agent/main.py` |
+| ✅ | **The installer waits properly** — polls health for 30 s, then runs the agent in the foreground and prints the traceback rather than guessing | `Agent/install-agent.ps1` |
+| ✅ | **Pairing link printed** for browsers other than the default one | same |
+| ✅ | **Packaging** — 234 KB zip, no Gemini code, no key, no frontend | `Agent/build-agent-package.ps1` |
 
 **Phase 2 (part) and 3 — cloud split and frontend:**
 
@@ -88,9 +91,42 @@ into, or is shared with, the agent, so it was fixed once rather than twice):
 | ✅ | **Cloud API deployed — 2026-08-28** | `https://apparel-cloud-api-434863957551.asia-south1.run.app` · project `gen-lang-client-0222340998` · region asia-south1 (Mumbai, nearest to Pakistan) · 1 GiB, min-instances 0, max 4. Verified live: `/health` reports `cloud-plan-only`, `/plan` 401s without the key, `/jobs/*` 404, `/automation/manifest` serves the JSX hashes. Redeploy with `Backend\deploy-cloudrun.ps1 -ProjectId gen-lang-client-0222340998` |
 | ✅ | **Frontend deployed to Vercel — 2026-08-28** | `https://apparel-ai-generator.vercel.app`. All four pages 200. `/api/plan` rejects GET (405) and non-multipart (400). A real Excel through the live site returned a correct plan in **19 s** — browser → Vercel → Cloud Run → Gemini, end to end. The API key and the Cloud Run URL appear nowhere in the served HTML. The agent's CORS admits this origin and refuses a stranger's |
 | 🟡 | **End-to-end test** | **Passed locally on 2026-08-28** — `Local_test_Agent`: browser → cloud `/plan` → agent `/jobs` → Illustrator → SSE → 15 MB zip, 5 sizes, `PARM: no PARM errors in this job`. That was a small order through the whole new path. Still owed: a full-size order, and the same run against the deployed cloud and Vercel rather than localhost |
-| ⬜ | **`https://` → `http://localhost` proved on the real site** | The mechanism was proved on 2026-08-27 from `https://example.com`; not yet from Vercel |
+| ⬜ | **A real order from the deployed site, on a designer's PC** | The single remaining thing that matters. Everything up to it is verified; the render itself has only ever run against localhost |
+| ⬜ | **`https://` → `http://localhost` proved on the real site** | The mechanism was proved on 2026-08-27 from `https://example.com`, and the agent answers a Vercel-origin preflight correctly — but no browser has yet driven a job from the deployed site |
 | ⬜ | Disk-space check in the local backend | The agent has one |
 | ⬜ | Illustrator version probe | Edge case 8 |
+
+### What the first install on a designer's PC taught us — 2026-08-28
+
+The first real install found two things no amount of local testing had, because
+both only appear on a machine that has never run this before.
+
+**1. The agent died instantly under `pythonw`, which is how it is installed.**
+The Scheduled Task uses `pythonw.exe` so no console window appears. `pythonw`
+gives the process `sys.stdout = None`, and the ten `print()` calls in
+`__main__` raised `AttributeError` before uvicorn ever bound a port — writing
+nothing anywhere, because there was nowhere to write. Run by hand with
+`python.exe` it worked perfectly, which made it look like the Scheduled Task's
+fault. It was not. Both streams now go to a log file when there is no console.
+
+The general lesson, worth keeping: **anything launched by `pythonw` must not
+assume it has streams.** That includes libraries.
+
+**2. Pairing belongs to the browser, not the machine.** The installer opens the
+*default* browser, and the token lands in that browser's `localStorage`, which
+no other browser can read. The designer's default was Edge; they worked in
+Chrome; Chrome reported "the agent is not running on this PC" — from where they
+stood, identical to a failed install. The installer now prints the pairing link
+so it can be pasted into whichever browser they actually use.
+
+Pairing then lasts indefinitely. It is lost only by clearing site data, using
+a private window, or moving to another browser or Windows profile.
+
+**And a third thing that was not a bug:** the installer declared failure after
+sleeping four seconds. A cold venv importing `win32com` takes longer than that
+on a first run, so a working install reported itself broken. It now polls for
+30 s and, if the agent really has not come up, runs it in the foreground and
+shows the traceback.
 
 **Decided against, on 2026-08-28: blocking sleep during a job (edge case 6).**
 A power cut ends a job the same way sleep does and cannot be prevented, so the
