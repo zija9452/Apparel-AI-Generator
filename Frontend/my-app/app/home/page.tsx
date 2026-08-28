@@ -258,7 +258,10 @@ export default function Home() {
       {/* Illustrator is a Windows program - it cannot run on the server, so
           the rendering half installs on the designer's own PC. This is where
           they get it. One install per machine, then it starts by itself. */}
-      <section className="mx-auto max-w-7xl px-5 pb-16">
+      {/* id="agent" is the target of "Get the agent" on the orchestrator page.
+          scroll-mt clears the sticky header, which would otherwise cover the
+          heading the link exists to show. */}
+      <section id="agent" className="mx-auto max-w-7xl scroll-mt-24 px-5 pb-16">
         <Panel className="overflow-hidden">
           <div className="grid gap-8 p-8 sm:p-10 lg:grid-cols-5">
             <div className="lg:col-span-3">
@@ -287,7 +290,7 @@ export default function Home() {
                 >
                   <Icon.Download className="h-4 w-4" />
                   Download the agent
-                  <span className="font-mono text-xs font-medium opacity-80">233 KB</span>
+                  <span className="font-mono text-xs font-medium opacity-80">234 KB</span>
                 </a>
                 <Link
                   href="/docs"
