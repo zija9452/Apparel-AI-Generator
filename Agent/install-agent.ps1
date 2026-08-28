@@ -259,14 +259,52 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
 Write-Host "Registered '$TaskName' - it will start at every logon." -ForegroundColor Green
 
 Start-ScheduledTask -TaskName $TaskName
-Start-Sleep -Seconds 4
 
-try {
-    $health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/agent/health" -TimeoutSec 5
+# Wait properly instead of sleeping four seconds and hoping. A cold venv
+# importing win32com takes longer than that on a machine that has never run
+# this before, and declaring failure at four seconds sent people looking for a
+# bug that was not there.
+Write-Host "Waiting for the agent to answer..." -NoNewline
+$Python = $PythonW -replace 'pythonw\.exe$', 'python.exe'
+$health = $null
+foreach ($attempt in 1..30) {
+    try {
+        $health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/agent/health" -TimeoutSec 2
+        break
+    } catch {
+        Write-Host "." -NoNewline
+        Start-Sleep -Seconds 1
+    }
+}
+Write-Host ""
+
+if ($health) {
     Write-Host "Agent is answering. Version $($health.version)." -ForegroundColor Green
-} catch {
-    Write-Host "Agent did not answer on port 8765 yet. Check it with:" -ForegroundColor DarkYellow
-    Write-Host "  & '$PythonW'.Replace('pythonw','python') '$AgentScript'"
+} else {
+    # pythonw has no console, so whatever went wrong went nowhere. Run it once
+    # WITH a console and show the designer the actual reason - an unreadable
+    # traceback beats a silent failure they cannot act on.
+    Write-Host ""
+    Write-Host "The agent did not start. Running it in the foreground to find out why:" -ForegroundColor DarkYellow
+    Write-Host ""
+    $job = Start-Job -ScriptBlock {
+        param($py, $script, $dir)
+        Set-Location $dir
+        & $py $script 2>&1
+    } -ArgumentList $Python, $AgentScript, $AgentDir
+
+    # Long enough to fail. If it is still alive after this it started fine and
+    # the earlier timeout was simply too short.
+    Wait-Job $job -Timeout 20 | Out-Null
+    $out = Receive-Job $job -ErrorAction SilentlyContinue
+    Stop-Job $job -ErrorAction SilentlyContinue
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+
+    if ($out) { $out | Select-Object -Last 25 | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray } }
+
+    Write-Host ""
+    Write-Host "Run this yourself to see it live:" -ForegroundColor Cyan
+    Write-Host "  & '$Python' '$AgentScript'"
 }
 
 # Hand the token straight to the website instead of asking a designer to copy
