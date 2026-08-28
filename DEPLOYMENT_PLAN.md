@@ -86,7 +86,7 @@ into, or is shared with, the agent, so it was fixed once rather than twice):
 | | What | Note |
 |---|---|---|
 | ✅ | **Cloud API deployed — 2026-08-28** | `https://apparel-cloud-api-434863957551.asia-south1.run.app` · project `gen-lang-client-0222340998` · region asia-south1 (Mumbai, nearest to Pakistan) · 1 GiB, min-instances 0, max 4. Verified live: `/health` reports `cloud-plan-only`, `/plan` 401s without the key, `/jobs/*` 404, `/automation/manifest` serves the JSX hashes. Redeploy with `Backend\deploy-cloudrun.ps1 -ProjectId gen-lang-client-0222340998` |
-| ⬜ | **Frontend deployed to Vercel** | Then put that origin into the agent's `AGENT_ALLOWED_ORIGINS` (the default already lists `apparel-ai-generator.vercel.app`) and the cloud's CORS |
+| ✅ | **Frontend deployed to Vercel — 2026-08-28** | `https://apparel-ai-generator.vercel.app`. All four pages 200. `/api/plan` rejects GET (405) and non-multipart (400). A real Excel through the live site returned a correct plan in **19 s** — browser → Vercel → Cloud Run → Gemini, end to end. The API key and the Cloud Run URL appear nowhere in the served HTML. The agent's CORS admits this origin and refuses a stranger's |
 | 🟡 | **End-to-end test** | **Passed locally on 2026-08-28** — `Local_test_Agent`: browser → cloud `/plan` → agent `/jobs` → Illustrator → SSE → 15 MB zip, 5 sizes, `PARM: no PARM errors in this job`. That was a small order through the whole new path. Still owed: a full-size order, and the same run against the deployed cloud and Vercel rather than localhost |
 | ⬜ | **`https://` → `http://localhost` proved on the real site** | The mechanism was proved on 2026-08-27 from `https://example.com`; not yet from Vercel |
 | ⬜ | Disk-space check in the local backend | The agent has one |
