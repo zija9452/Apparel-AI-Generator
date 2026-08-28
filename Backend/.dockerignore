@@ -1,0 +1,23 @@
+# SECRETS. The keys reach the container through Cloud Run's environment, never
+# through the image - an image can be pulled by anyone with registry access,
+# and layers keep what you later delete.
+.env
+.env.*
+
+# Runtime state and job output. apparel_sessions.db alone reached 1.1GB.
+*.db
+*.db-wal
+*.db-shm
+uploads/
+Production testing files/
+
+# Local environment
+.venv/
+__pycache__/
+*.py[cod]
+
+# Not needed to run the service
+docs/
+scripts/docs/
+uv.lock
+pyproject.toml

@@ -1,0 +1,13 @@
+# The CLOUD half only. Deliberately no pywin32: Illustrator does not run here,
+# and the package does not even install on Linux. main.py expects that import
+# to fail and removes the /jobs routes when it does.
+#
+# Kept in step with pyproject.toml, which is what local development uses.
+fastapi>=0.136.1
+uvicorn[standard]>=0.46.0
+openai-agents>=0.14.6
+openpyxl>=3.1.5
+pandas>=3.0.2
+pydantic>=2.13.3
+python-multipart>=0.0.26
+python-dotenv>=1.0.0

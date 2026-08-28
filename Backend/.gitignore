@@ -10,3 +10,5 @@ wheels/
 .venv
 .env
 uploads
+# The generated Cloud Run API key. Same class of secret as .env.
+.cloud-api-key

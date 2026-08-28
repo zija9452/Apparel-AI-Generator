@@ -17,7 +17,20 @@ from fastapi.middleware.cors import CORSMiddleware
 # Internal services
 from services import job_runtime
 from services.excel_service import parse_order_excel
-from services.illustrator_automation import run_illustrator_automation, update_status
+
+# Illustrator is Windows-only: illustrator_automation imports win32com and
+# winreg on its first line. On Cloud Run - Linux - that import cannot succeed,
+# and it does not need to: the cloud half only plans. The rendering routes are
+# removed from the app entirely further down when this import fails, so a
+# deployed instance answers 404 rather than pretending to accept a job it can
+# never run.
+try:
+    from services.illustrator_automation import run_illustrator_automation, update_status
+    ILLUSTRATOR_AVAILABLE = True
+except ImportError:  # no pywin32 / not Windows
+    ILLUSTRATOR_AVAILABLE = False
+    run_illustrator_automation = None  # type: ignore[assignment]
+    update_status = None  # type: ignore[assignment]
 
 # OpenAI Agents SDK imports
 from agents import (
@@ -1284,6 +1297,36 @@ async def download_job(job_id: str):
         return FileResponse(zip_path, filename=f"order_{job_id}_ready.zip")
     return {"status": "processing", "message": "Zip file not ready yet. Please refresh."}
 
+# --- What this instance actually is --------------------------------------
+#
+# One file, two deployments. On a designer's PC (or this dev box) Illustrator
+# is present and every route exists. On Cloud Run it is not, and the /jobs
+# routes are taken off the app rather than left to fail: a route that exists
+# but cannot work invites a caller to upload 139 MB before finding out.
+#
+# Done here, after every route is registered, so it cannot be defeated by
+# adding a route later and forgetting the guard.
+if not ILLUSTRATOR_AVAILABLE:
+    removed = [r for r in app.router.routes if getattr(r, "path", "").startswith("/jobs")]
+    app.router.routes = [r for r in app.router.routes if r not in removed]
+    logger.info(
+        "Illustrator not available on this host - %d rendering route(s) removed. "
+        "This instance plans only; rendering belongs to the local agent.",
+        len(removed),
+    )
+
+
+@app.get("/health")
+async def health():
+    """Cloud Run's readiness probe, and a quick way to see what an instance is."""
+    return {
+        "status": "ok",
+        "mode": "full" if ILLUSTRATOR_AVAILABLE else "cloud-plan-only",
+        "gemini_keys": len(GEMINI_MODELS),
+        "authenticated": bool(CLOUD_API_KEY),
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
 
@@ -1293,4 +1336,8 @@ if __name__ == "__main__":
     # deployment opts in explicitly rather than everyone else opting out.
     host = os.getenv("CLOUD_HOST", "127.0.0.1")
     port = int(os.getenv("PORT", "8000"))
-    uvicorn.run("main:app", host=host, port=port, reload=True)
+    # Auto-reload watches the whole tree and restarts on any write. That is
+    # useful while editing and actively harmful in a container, where it would
+    # restart mid-request and doubles memory for no reason.
+    reload = os.getenv("CLOUD_RELOAD", "1" if host == "127.0.0.1" else "0") == "1"
+    uvicorn.run("main:app", host=host, port=port, reload=reload)
