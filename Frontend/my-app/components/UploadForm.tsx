@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Alert,
   CheckBox,
@@ -17,6 +17,13 @@ import { PLAN_API, agentFetch } from "@/lib/api";
 
 /* --------------------------------------------------------------- atoms */
 
+/** One file field's current selection.
+ *
+ *  The File objects are kept, not just their names: a name cannot be re-read,
+ *  and re-reading is the only way to find out the file is still there. See
+ *  isUnreadable below. */
+type Picked = { label: string; files: File[]; stale?: boolean };
+
 function FileDrop({
   name,
   label,
@@ -25,7 +32,7 @@ function FileDrop({
   required,
   multiple,
   icon,
-  picked,
+  entry,
   onPick,
 }: {
   name: string;
@@ -35,11 +42,18 @@ function FileDrop({
   required?: boolean;
   multiple?: boolean;
   icon: ReactNode;
-  picked?: string;
+  entry?: Picked;
   onPick: (key: string, files: FileList | null) => void;
 }) {
+  const picked = entry?.label;
+  const stale = entry?.stale;
   return (
-    <div className="group relative rounded-xl border border-dashed border-line-strong bg-surface-2 p-4 transition-colors hover:border-brand/60 has-[:focus-visible]:border-brand has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-brand/30">
+    <div
+      className={cn(
+        "group relative rounded-xl border border-dashed bg-surface-2 p-4 transition-colors hover:border-brand/60 has-[:focus-visible]:border-brand has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-brand/30",
+        stale ? "border-warn/60" : "border-line-strong"
+      )}
+    >
       {/* The real input covers the whole card: click and drag-drop both work,
           and required/accept/name stay exactly as the backend expects. */}
       <input
@@ -56,12 +70,14 @@ function FileDrop({
         <span
           className={cn(
             "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition-colors",
-            picked
-              ? "border-ok/40 bg-ok-soft text-ok-ink"
-              : "border-line bg-surface text-faint group-hover:text-brand"
+            !picked
+              ? "border-line bg-surface text-faint group-hover:text-brand"
+              : stale
+                ? "border-warn/40 bg-warn-soft text-warn-ink"
+                : "border-ok/40 bg-ok-soft text-ok-ink"
           )}
         >
-          {picked ? <Icon.Check className="h-4 w-4" /> : icon}
+          {!picked ? icon : stale ? <Icon.Warn className="h-4 w-4" /> : <Icon.Check className="h-4 w-4" />}
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-ink">
@@ -78,11 +94,16 @@ function FileDrop({
           <p
             className={cn(
               "mt-1.5 truncate text-xs font-medium",
-              picked ? "text-ok-ink" : "text-faint"
+              !picked ? "text-faint" : stale ? "text-warn-ink" : "text-ok-ink"
             )}
           >
             {picked ?? "Click to browse, or drop the file here"}
           </p>
+          {stale && (
+            <p className="mt-1 text-xs font-medium leading-relaxed text-warn-ink">
+              Saved again since you picked it - click here and select it once more.
+            </p>
+          )}
         </div>
       </div>
     </div>
@@ -192,6 +213,80 @@ function Section({
   );
 }
 
+/* ---------------------------------------------------- file freshness */
+
+/** What to call each file field when an error has to name it. */
+const FIELD_LABELS: Record<string, string> = {
+  excel_file: "Orders Excel",
+  mockup_ai: "Design Mockup",
+  pattern_ai: "Master Pattern",
+  logo_library_ai: "Logo Library",
+  fonts: "Required Fonts",
+};
+
+/** True when the browser can no longer read a file it was handed earlier.
+ *
+ *  A file input copies nothing. It hands over a reference - path, size and
+ *  modification time as they were at the moment of picking - and the browser
+ *  checks that snapshot against the disk when it finally reads. Saving over the
+ *  file in Illustrator or Excel invalidates it, and the read then fails.
+ *
+ *  WHY THIS FUNCTION EXISTS: inside fetch() that failure arrives as a bare
+ *  "TypeError: Failed to fetch", indistinguishable from a dead server - which
+ *  is how a healthy backend used to get blamed for a re-saved pattern. Reading
+ *  one byte here triggers the same check while we can still say what happened.
+ */
+async function isUnreadable(file: File): Promise<boolean> {
+  try {
+    await file.slice(0, 1).arrayBuffer();
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** The keys of `picked` whose files no longer read back. */
+async function findStale(picked: Record<string, Picked>): Promise<string[]> {
+  const stale: string[] = [];
+  for (const [key, entry] of Object.entries(picked)) {
+    for (const file of entry.files) {
+      if (await isUnreadable(file)) {
+        stale.push(key);
+        break;
+      }
+    }
+  }
+  return stale;
+}
+
+/** "A", "A and B", "A, B and C". */
+function joinList(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/** An error already phrased for a designer: its own heading and one line of
+ *  advice. Anything thrown without them shows the message alone - a wrong
+ *  guess at the cause is worse than no guess, which is exactly what the old
+ *  hardcoded "check localhost:8765" line was.
+ *
+ *  `tone` is "warn" when the fix is in the designer's own hands - a re-saved
+ *  file - and "danger" when something is actually broken. */
+type Phrased = Error & { title?: string; hint?: string; tone?: "warn" | "danger" };
+
+function fail(
+  title: string,
+  message: string,
+  hint?: string,
+  tone: "warn" | "danger" = "danger"
+): never {
+  const err: Phrased = new Error(message);
+  err.title = title;
+  err.hint = hint;
+  err.tone = tone;
+  throw err;
+}
+
 /* ---------------------------------------------------------------- form */
 
 export default function UploadForm({
@@ -209,22 +304,66 @@ export default function UploadForm({
   // (a model call, then a local file copy), so saying which is honest feedback
   // rather than one spinner covering both.
   const [step, setStep] = useState<"plan" | "send" | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<Phrased | null>(null);
   const [logoEnabled, setLogoEnabled] = useState(false);
   const [fullButtonJerseyEnabled, setFullButtonJerseyEnabled] = useState(false);
   const [armholeMatchEnabled, setArmholeMatchEnabled] = useState(false);
   const [hoodieEnabled, setHoodieEnabled] = useState(false);
-  const [picked, setPicked] = useState<Record<string, string>>({});
+  const [picked, setPicked] = useState<Record<string, Picked>>({});
 
   const onPick = (key: string, files: FileList | null) => {
     setPicked((prev) => {
       const next = { ...prev };
       if (!files || files.length === 0) delete next[key];
-      else if (files.length === 1) next[key] = files[0].name;
-      else next[key] = `${files.length} files selected`;
+      // A fresh pick is fresh by definition, so `stale` is simply not carried
+      // over - re-selecting the file is what clears the warning.
+      else
+        next[key] = {
+          label: files.length === 1 ? files[0].name : `${files.length} files selected`,
+          files: Array.from(files),
+        };
       return next;
     });
   };
+
+  // The picked files, reachable from an event handler that was registered once.
+  const pickedRef = useRef(picked);
+  useEffect(() => {
+    pickedRef.current = picked;
+  }, [picked]);
+
+  // Re-check every selection whenever this tab comes back to the front. The
+  // designer leaves to save the pattern in Illustrator and comes back; that
+  // round trip is exactly when a selection goes stale, so it is exactly when
+  // to look - long before the Generate button is pressed.
+  useEffect(() => {
+    let checking = false;
+    const recheck = async () => {
+      if (checking || document.visibilityState !== "visible") return;
+      checking = true;
+      try {
+        const stale = await findStale(pickedRef.current);
+        setPicked((prev) => {
+          let changed = false;
+          const next: Record<string, Picked> = {};
+          for (const [key, entry] of Object.entries(prev)) {
+            const isStale = stale.includes(key);
+            if (!!entry.stale !== isStale) changed = true;
+            next[key] = !!entry.stale === isStale ? entry : { ...entry, stale: isStale };
+          }
+          return changed ? next : prev; // same object = no re-render
+        });
+      } finally {
+        checking = false;
+      }
+    };
+    window.addEventListener("focus", recheck);
+    document.addEventListener("visibilitychange", recheck);
+    return () => {
+      window.removeEventListener("focus", recheck);
+      document.removeEventListener("visibilitychange", recheck);
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -235,6 +374,26 @@ export default function UploadForm({
     const formData = new FormData(e.currentTarget);
 
     try {
+      // Before anything leaves this machine: are the files still the files?
+      // Illustrator or Excel was very likely used between picking and pressing
+      // Generate, and a re-saved file cannot be read from the old reference.
+      const stale = await findStale(picked);
+      if (stale.length) {
+        setPicked((prev) => {
+          const next = { ...prev };
+          for (const key of stale) if (next[key]) next[key] = { ...next[key], stale: true };
+          return next;
+        });
+        const named = stale.map((key) => `${FIELD_LABELS[key] ?? key} (${picked[key].label})`);
+        const many = stale.length > 1;
+        fail(
+          many ? "Those files changed after you picked them" : "That file changed after you picked it",
+          `${joinList(named)} ${many ? "were" : "was"} saved again after being selected, so the browser can no longer read ${many ? "them" : "it"}.`,
+          "Nothing was uploaded - this is your browser, not the backend. Click the highlighted field above and select the file again; the newly saved version will be used.",
+          "warn"
+        );
+      }
+
       // Ask before uploading, not after. The agent rejects a second job with a
       // 409 either way, but the multipart body - pattern.ai alone is ~135MB -
       // is fully transferred before the handler ever runs. This also covers the
@@ -261,7 +420,13 @@ export default function UploadForm({
         planForm.append(key, value);
       }
 
-      const planRes = await fetch(PLAN_API, { method: "POST", body: planForm });
+      const planRes = await fetch(PLAN_API, { method: "POST", body: planForm }).catch(() =>
+        fail(
+          "The order sheet could not be sent",
+          "The request for a production plan never reached this site's own server.",
+          "This one is the network, not the agent - check the connection and try again."
+        )
+      );
       if (!planRes.ok) {
         const err = await planRes.json().catch(() => ({}));
         throw new Error(err.detail || "Could not read the order sheet and build a plan.");
@@ -283,7 +448,13 @@ export default function UploadForm({
         if (font instanceof File && font.size > 0) jobForm.append("fonts", font);
       }
 
-      const jobRes = await agentFetch("/jobs", { method: "POST", body: jobForm });
+      const jobRes = await agentFetch("/jobs", { method: "POST", body: jobForm }).catch(() =>
+        fail(
+          "The agent did not answer",
+          "The plan was built, but the files could not be handed to the agent on this PC.",
+          "Check that the agent is running on localhost:8765 - the status panel above shows it - then try again. If a file was re-saved in the last few seconds, select it again first."
+        )
+      );
       if (!jobRes.ok) {
         const err = await jobRes.json().catch(() => ({}));
         throw new Error(err.detail || "The agent could not start the job.");
@@ -291,7 +462,10 @@ export default function UploadForm({
       const job = await jobRes.json();
       onPlanGenerated({ ...job, production_plan: plan });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // A phrased error carries its own heading and advice. Anything else is
+      // shown as its message alone - deliberately with no cause attached, so
+      // that an unknown failure stops accusing whichever service was guessed.
+      setError(err instanceof Error ? (err as Phrased) : new Error(String(err)));
     } finally {
       setLoading(false);
       setStep(null);
@@ -353,7 +527,7 @@ export default function UploadForm({
               accept=".xlsx"
               required
               icon={<Icon.Sheet className="h-4 w-4" />}
-              picked={picked["excel_file"]}
+              entry={picked["excel_file"]}
               onPick={onPick}
             />
             <FileDrop
@@ -363,7 +537,7 @@ export default function UploadForm({
               accept=".ai"
               required
               icon={<Icon.Shirt className="h-4 w-4" />}
-              picked={picked["mockup_ai"]}
+              entry={picked["mockup_ai"]}
               onPick={onPick}
             />
             <FileDrop
@@ -373,7 +547,7 @@ export default function UploadForm({
               accept=".ai"
               required
               icon={<Icon.Pattern className="h-4 w-4" />}
-              picked={picked["pattern_ai"]}
+              entry={picked["pattern_ai"]}
               onPick={onPick}
             />
             <FileDrop
@@ -382,7 +556,7 @@ export default function UploadForm({
               hint="Any font the mockup uses that isn't installed on this PC"
               multiple
               icon={<Icon.Type className="h-4 w-4" />}
-              picked={picked["fonts"]}
+              entry={picked["fonts"]}
               onPick={onPick}
             />
           </div>
@@ -756,7 +930,7 @@ export default function UploadForm({
                     accept=".ai"
                     required
                     icon={<Icon.Layers className="h-4 w-4" />}
-                    picked={picked["logo_library_ai"]}
+                    entry={picked["logo_library_ai"]}
                     onPick={onPick}
                   />
                 </div>
@@ -771,13 +945,9 @@ export default function UploadForm({
         {/* ------------------------------------------------- submit bar */}
         <div className="space-y-3 border-t border-line bg-surface-2 px-5 py-5 sm:px-7">
           {error && (
-            <Alert tone="danger" title="Upload failed">
-              <p>{error}</p>
-              <p className="text-xs opacity-80">
-                Check that the backend is running on{" "}
-                <code className="font-mono">localhost:8765</code> and that the plan service is
-                reachable, then try again.
-              </p>
+            <Alert tone={error.tone ?? "danger"} title={error.title ?? "Upload failed"}>
+              <p>{error.message}</p>
+              {error.hint && <p className="text-xs opacity-80">{error.hint}</p>}
             </Alert>
           )}
 

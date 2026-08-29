@@ -32,6 +32,9 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...except the template, which carries no values and is how anyone deploying
+# this learns which variables exist and which must NOT be NEXT_PUBLIC_.
+!.env.example
 
 # vercel
 .vercel
