@@ -249,8 +249,74 @@ $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit (New-TimeSpan -Seconds 0)   # a render can take half an hour; never kill it
 
+# STOP THE AGENT THAT IS ALREADY RUNNING, BEFORE REGISTERING THE NEW ONE.
+#
+# Unregister-ScheduledTask removes the task DEFINITION and leaves the running
+# pythonw.exe alone. That process still holds 127.0.0.1:8765, so the freshly
+# started one cannot bind the port and dies immediately - and the health check
+# further down still succeeds, because the OLD agent answers it. The installer
+# then prints "ready" over an agent running last month's code.
+#
+# That is exactly how the move to jns-apparel.vercel.app appeared to fail on
+# every PC: the new origin was refused by an old agent nobody had stopped, and
+# nothing on screen said so.
+$agentPort = 8765
+
+# A render can run for half an hour and cannot be resumed from the middle.
+# Killing one silently would throw away the designer's work AND leave
+# Illustrator holding half-written documents, so ask before doing it.
+$running = $null
+if (Test-Path $TokenPath) {
+    try {
+        $running = (Invoke-RestMethod -Uri "http://127.0.0.1:$agentPort/jobs/running" `
+            -Headers @{ "x-agent-token" = (Get-Content $TokenPath -Raw).Trim() } `
+            -TimeoutSec 3).job_id
+    } catch { }   # not running, or too old to answer - either way, nothing to protect
+}
+if ($running) {
+    Write-Host ""
+    Write-Host "A render is in progress right now (job $running)." -ForegroundColor Yellow
+    Write-Host "Installing would stop it, and it cannot resume from the middle." -ForegroundColor Yellow
+    $reply = Read-Host "Type YES to stop it anyway, anything else to cancel"
+    if ($reply -ne "YES") { Write-Host "Cancelled. Run this again when the render has finished." -ForegroundColor Cyan; exit 1 }
+}
+
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+}
+
+# Kill by WHO HOLDS THE PORT, not by process name. Several unrelated things on
+# a designer's PC run pythonw.exe, and killing all of them would be a way of
+# making this installer the problem.
+$owners = @()
+try {
+    $owners = Get-NetTCPConnection -LocalPort $agentPort -State Listen -ErrorAction Stop |
+              Select-Object -ExpandProperty OwningProcess -Unique
+} catch {
+    # Get-NetTCPConnection is missing on older builds; netstat is always there.
+    $owners = netstat -ano -p TCP |
+        Select-String ":$agentPort\s+.*LISTENING\s+(\d+)" |
+        ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -Unique
+}
+foreach ($procId in $owners) {
+    try {
+        $p = Get-Process -Id $procId -ErrorAction Stop
+        Write-Host "Stopping the agent already running (PID $procId, $($p.ProcessName))..." -ForegroundColor Yellow
+        Stop-Process -Id $procId -Force -ErrorAction Stop
+    } catch { }
+}
+
+# Windows does not free a listening socket the instant the process dies, and
+# binding too early fails in exactly the same silent way this block exists to
+# prevent. Wait for the port to actually go quiet.
+if ($owners) {
+    foreach ($wait in 1..20) {
+        Start-Sleep -Milliseconds 250
+        $still = $null
+        try { $still = Get-NetTCPConnection -LocalPort $agentPort -State Listen -ErrorAction SilentlyContinue } catch { }
+        if (-not $still) { break }
+    }
 }
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
     -Principal $principal -Settings $settings `
@@ -279,6 +345,29 @@ foreach ($attempt in 1..30) {
 Write-Host ""
 
 if ($health) {
+    # "Something answered on 8765" is NOT the same as "the agent we just
+    # installed is running". If an older copy survived the stop above it will
+    # answer this check quite happily, and reporting success then is how a PC
+    # ends up running last month's code while the screen says it is up to date.
+    # So compare against the version in the main.py sitting next to this
+    # script, and treat a mismatch as a failure rather than a curiosity.
+    $expected = $null
+    try {
+        $m = Select-String -Path $AgentScript -Pattern '^AGENT_VERSION\s*=\s*"([^"]+)"' | Select-Object -First 1
+        if ($m) { $expected = $m.Matches[0].Groups[1].Value }
+    } catch { }
+
+    if ($expected -and $health.version -ne $expected) {
+        Write-Host ""
+        Write-Host "WRONG AGENT IS RUNNING." -ForegroundColor Red
+        Write-Host "  Expected version $expected (the one just installed)" -ForegroundColor Red
+        Write-Host "  Answering on port $agentPort is version $($health.version)" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "An older agent is still holding the port, so the new one could not" -ForegroundColor Yellow
+        Write-Host "start. Sign out and back in, then run this installer again." -ForegroundColor Yellow
+        exit 1
+    }
+
     Write-Host "Agent is answering. Version $($health.version)." -ForegroundColor Green
 } else {
     # pythonw has no console, so whatever went wrong went nowhere. Run it once
