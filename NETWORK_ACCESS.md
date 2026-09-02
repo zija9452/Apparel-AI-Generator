@@ -16,7 +16,7 @@ locked before today:
 |---|---|---|
 | Cloud API | `apparel-cloud-api-…run.app` | `CLOUD_API_KEY`, constant-time compare |
 | Local agent | `127.0.0.1:8765` on the designer's PC | pairing token, loopback bind, `Host` check |
-| **The website** | `apparel-ai-generator.vercel.app` | **nothing — it was a public URL** |
+| **The website** | `jns-apparel.vercel.app` (was `apparel-ai-generator.vercel.app` until 2026-09-02) | **nothing — it was a public URL** |
 
 The site being open was not a data leak; there is nothing behind it worth
 stealing. It was a **bill and a denial of service**. `/api/plan` attaches

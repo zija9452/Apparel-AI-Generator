@@ -28,8 +28,10 @@ param(
     [string]$ServiceName = "apparel-cloud-api",
 
     # Where the browser will call from. Must match the deployed frontend, or
-    # CORS will refuse it.
-    [string]$AllowedOrigins = "https://apparel-ai-generator.vercel.app,http://localhost:3000"
+    # CORS will refuse it. The old apparel-ai-generator name is kept alongside
+    # the current one so a bookmark still works mid-transition; drop it once
+    # nobody is on it.
+    [string]$AllowedOrigins = "https://jns-apparel.vercel.app,https://apparel-ai-generator.vercel.app,http://localhost:3000"
 )
 
 $ErrorActionPreference = "Stop"

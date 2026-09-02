@@ -110,9 +110,42 @@ DISK_WARN_BYTES = 20 * 1024 ** 3
 ALLOWED_ORIGINS = [
     o.strip() for o in os.environ.get(
         "AGENT_ALLOWED_ORIGINS",
-        "https://apparel-ai-generator.vercel.app,http://localhost:3000,http://127.0.0.1:3000",
+        "https://jns-apparel.vercel.app,"
+        "https://apparel-ai-generator.vercel.app,"
+        "http://localhost:3000,http://127.0.0.1:3000",
     ).split(",") if o.strip()
 ]
+
+# THIS PROJECT's Vercel deployments, matched by pattern rather than listed.
+#
+# WHY A PATTERN AND NOT A LIST. This default is compiled into the copy of the
+# agent sitting on each designer's PC, and the scheduled task runs it with no
+# environment of its own - so a list here can only be corrected by reinstalling
+# on every machine. That is exactly what happened when the site moved from
+# apparel-ai-generator.vercel.app to jns-apparel.vercel.app: every installed
+# agent kept refusing the new origin, the site reported "agent offline", and
+# nothing in the browser explained why. The pattern makes the next rename a
+# non-event.
+#
+# It also covers Vercel's per-deployment preview subdomains, which are
+# generated per commit and cannot be enumerated:
+#   jns-apparel-a1b2c3.vercel.app, jns-apparel-git-main-team.vercel.app
+#
+# WHY IT NAMES THE PROJECT AND IS NOT JUST .*\.vercel\.app. Anyone can deploy
+# to vercel.app in a minute, so the wildcard form would let any stranger's page
+# talk to every agent in the office. It could not drive one - every route but
+# /agent/health needs the pairing token, and that token sits in OUR origin's
+# localStorage where a different origin cannot read it - but it would let an
+# unrelated site confirm the agent is running and read its health. There is no
+# reason to allow that, so this is scoped to deployments whose name starts with
+# the project's own.
+#
+# Anchoring is free: Starlette matches this with re.fullmatch, so
+# https://jns-apparel.vercel.app.example.com does NOT match.
+ALLOWED_ORIGIN_REGEX = os.environ.get(
+    "AGENT_ALLOWED_ORIGIN_REGEX",
+    r"https://(jns-apparel|apparel-ai-generator)[a-z0-9-]*\.vercel\.app",
+)
 
 # ---------------------------------------------------------------------------
 # PAIRING TOKEN - the real lock on this agent
@@ -170,6 +203,7 @@ app = FastAPI(title="AI Apparel Local Agent", version=AGENT_VERSION)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )

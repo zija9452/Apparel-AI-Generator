@@ -311,7 +311,7 @@ if ($health) {
 # it. The exchange never leaves this machine: a program they just ran opens a
 # page and passes it in the URL, and the page stores it and strips it out. See
 # the automatic-pairing note in components/AgentStatus.tsx.
-$site = if ($env:AI_APPAREL_SITE) { $env:AI_APPAREL_SITE } else { "https://apparel-ai-generator.vercel.app" }
+$site = if ($env:AI_APPAREL_SITE) { $env:AI_APPAREL_SITE } else { "https://jns-apparel.vercel.app" }
 if (Test-Path $TokenPath) {
     $token = (Get-Content $TokenPath -Raw).Trim()
     $pairUrl = "$site/?agent_token=$([uri]::EscapeDataString($token))"

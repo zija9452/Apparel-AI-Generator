@@ -827,7 +827,14 @@ app = FastAPI(title="AI Apparel Orchestrator API")
 ALLOWED_ORIGINS = [
     o.strip() for o in os.getenv(
         "CLOUD_ALLOWED_ORIGINS",
-        "https://apparel-ai-generator.vercel.app,http://localhost:3000,http://127.0.0.1:3000",
+        # The site moved from apparel-ai-generator to jns-apparel on
+        # 2026-09-02. The old name is kept so a bookmark or an older agent
+        # install does not break mid-transition; delete it once nobody is on
+        # it. The regex below covers both anyway - these are the explicit
+        # names, for anyone reading the config rather than the pattern.
+        "https://jns-apparel.vercel.app,"
+        "https://apparel-ai-generator.vercel.app,"
+        "http://localhost:3000,http://127.0.0.1:3000",
     ).split(",") if o.strip()
 ]
 
@@ -835,8 +842,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     # Vercel preview builds get a generated subdomain per deployment, so they
-    # cannot be listed one by one.
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    # cannot be listed one by one. Scoped to this project's own names rather
+    # than every .vercel.app, since anyone can deploy one of those - see the
+    # same reasoning in Agent/main.py. Starlette uses re.fullmatch, so a
+    # suffix like ...vercel.app.example.com does not match.
+    allow_origin_regex=r"https://(jns-apparel|apparel-ai-generator)[a-z0-9-]*\.vercel\.app",
     allow_methods=["*"],
     allow_headers=["*"],
 )
