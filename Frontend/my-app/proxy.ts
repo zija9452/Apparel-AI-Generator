@@ -1,4 +1,5 @@
-/** The front door: only the office networks get past this file.
+/** The front door: only the office networks get past this file - when it is
+ *  switched on. IT IS CURRENTLY SWITCHED OFF; see IP_GATE below.
  *
  *  WHY IT EXISTS. The other two halves of this system are already locked:
  *  Cloud Run sits behind CLOUD_API_KEY, and the agent behind a pairing token
@@ -27,6 +28,29 @@
  */
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+
+/** The master switch. OFF unless IP_GATE is literally "on".
+ *
+ *  The gate below is complete and tested, but switched off for now: the office
+ *  addresses proved unstable - two of the three lines changed lease overnight
+ *  on 2026-09-01, the first working day after this shipped - and locking the
+ *  designers out is worse than leaving a site open that has no data behind it.
+ *  See AUTH_PLAN.md. None of the code below is deleted, because the intent is
+ *  to switch it back on once there is a static IP or an identity check beside
+ *  it.
+ *
+ *  To turn the gate back on: set IP_GATE=on and a current ALLOWED_IPS in
+ *  Vercel, then redeploy. Both values are inlined at build time, so a settings
+ *  change alone does nothing until the site is rebuilt.
+ *
+ *  DEFAULT OFF, ON EXPLICIT REQUEST. It is the opposite of the ALLOWED_IPS rule
+ *  right below, which fails shut, and the difference is deliberate: an empty
+ *  ALLOWED_IPS is somebody forgetting to configure a gate they meant to run,
+ *  while an absent IP_GATE is the state this file was deliberately left in. The
+ *  cost is stated plainly: if this variable is ever lost in a future
+ *  environment migration, the door opens silently rather than shutting loudly.
+ */
+const GATE_ENABLED = (process.env.IP_GATE ?? "off").trim().toLowerCase() === "on";
 
 /** The networks allowed to use this site, comma separated.
  *
@@ -255,6 +279,11 @@ function deniedPage(ip: string, configured: boolean): string {
 }
 
 export function proxy(request: NextRequest) {
+  // Switched off: every request passes untouched, and nothing below runs. No
+  // 403 page, no JSON refusal, no trace of any of this in the browser - the
+  // site behaves exactly as it did before this file existed.
+  if (!GATE_ENABLED) return NextResponse.next();
+
   const ip = clientIp(request);
 
   // No address at all: nothing to gate against, and nothing that could have

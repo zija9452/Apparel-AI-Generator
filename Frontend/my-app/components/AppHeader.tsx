@@ -21,12 +21,12 @@ export default function AppHeader({
     <header className="sticky top-0 z-40 border-b border-line bg-surface/80 backdrop-blur-xl">
       <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-6 gap-y-3 px-5 py-3">
         <Link href="/" className="group flex items-center gap-3">
-          <span className="relative flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-brand to-accent text-white shadow-[0_8px_20px_-10px_var(--brand)]">
+          <span className="relative flex h-10 w-10 items-center justify-center rounded-xl bg-linear-to-br from-brand to-accent text-white shadow-[0_8px_20px_-10px_var(--brand)]">
             <Icon.Logo className="h-5 w-5" />
           </span>
           <span className="leading-tight">
             <span className="block text-base font-bold tracking-tight text-ink">
-              AI Apparel <span className="text-gradient">Orchestrator</span>
+              <span className="text-gradient">JnS</span> Apparel 
             </span>
             <span className="block text-xs font-medium tracking-wide text-faint">
               Excel + Mockup + Pattern → print-ready files
@@ -34,7 +34,7 @@ export default function AppHeader({
           </span>
         </Link>
 
-        <nav className="order-3 flex items-center gap-1 rounded-xl border border-line bg-surface-2 p-1 sm:order-none sm:ml-4">
+        <nav className="order-3 flex items-center gap-1 rounded-xl border border-line bg-surface-2 p-1 sm:order-0 sm:ml-4">
           {NAV.map((n) => (
             <Link
               key={n.key}
@@ -43,7 +43,7 @@ export default function AppHeader({
               className={cn(
                 "rounded-lg px-3 py-1.5 text-sm font-semibold transition-colors",
                 active === n.key
-                  ? "bg-surface text-ink shadow-[var(--shadow-soft)]"
+                  ? "bg-surface text-ink shadow-(--shadow-soft)"
                   : "text-muted hover:text-ink"
               )}
             >

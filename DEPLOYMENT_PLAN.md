@@ -485,47 +485,33 @@ on 503s.
 `Frontend/my-app/proxy.ts` closes it: the visitor's public IP must appear in
 `ALLOWED_IPS` or the request gets a 403.
 
+**📄 The full account is `NETWORK_ACCESS.md`** — how IP addressing and NAT make
+this work at all, why the header cannot be forged, the setup and repair
+procedure, and what the approach costs. What follows here is only the summary.
+
 | | |
 |---|---|
 | **File name** | `proxy.ts`, not `middleware.ts` — Next 16 deprecated the middleware convention and renamed it. The exported function must be called `proxy`, and it runs on the Node.js runtime |
-| **Which header** | `x-vercel-forwarded-for`, then `x-real-ip`, then the leftmost `x-forwarded-for`. Vercel sets all three itself and *"[does] not forward external IPs… to prevent IP spoofing"*, so a visitor cannot forge one. `x-vercel-forwarded-for` is first because `x-forwarded-for` is the only one a proxy in front of Vercel could overwrite |
-| **No `matcher`** | Deliberate. It therefore runs on every request — pages, `/api`, `_next/static`, and `public/AIApparelAgent.zip`. A stranger gets nothing at all, including the agent installer |
-| **Empty `ALLOWED_IPS`** | Blocks everything. A forgotten gate must fail shut, not open |
+| **Which header** | `x-vercel-forwarded-for`, then `x-real-ip`, then the leftmost `x-forwarded-for`. Vercel sets all three itself and *"[does] not forward external IPs… to prevent IP spoofing"*, so a visitor cannot forge one — tested with a forged header carrying an allowed address |
+| **No `matcher`** | Deliberate. It runs on every request — pages, `/api`, `_next/static`, and `public/AIApparelAgent.zip`. A stranger gets nothing at all, including the agent installer |
+| **Empty `ALLOWED_IPS`** | Blocks everything. A forgotten gate must fail shut, not open — and the block page names the address to add, so the failure repairs itself |
 | **Loopback** | `127.0.0.0/8` and `::1/128` always pass, matched on parsed bytes. `next start` reports loopback as `::ffff:127.0.0.1`, so a string compare against `"127.0.0.1"` silently 403s your own `npm run dev` — that bug was written and caught in testing |
 | **`no-store` on the block** | Without it the CDN could serve an allowed visitor's page to a blocked one, and a cached 403 would outlive the `ALLOWED_IPS` fix meant to clear it |
 
-**The block page prints the IP it saw**, which is the entire setup procedure:
-connect a PC to each office wifi, open the site, copy the address into
-`ALLOWED_IPS`, redeploy. That string is authoritative in a way a "what is my IP"
-site is not, because it is exactly what `proxy.ts` compares against.
-
-The networks, found 2026-08-31. They are **separate internet lines**, not one
-line with five access points — the addresses and the ISPs both differ:
+The networks, found 2026-08-31 — five wifis, but only **three internet lines**,
+and lines are what need listing:
 
 | SSID | Address | ISP |
 |---|---|---|
 | `J&S Marketing` | `39.34.163.45` | AS132165 Connect Communications |
-| `J&S 2.4GHZ` | `39.34.163.45` | same line — the other band of that router |
+| `J&S 2.4GHZ` | `39.34.163.45` | the other band of that same router |
 | `Jazznet1` | `154.198.107.184` | AS45669 PMCL / Jazz |
 | `PTCL FF` | `39.53.236.91` | AS17557 PTCL |
 | *one more* | still to be checked | |
 
-Five wifis, three entries. What needs listing is **internet lines, not SSIDs**:
-two bands of one router, a repeater, or a second access point all leave through
-the same public IP and are covered by a single entry.
-
-**What this costs, stated plainly.** Every PC behind one router shares that
-router's public IP, so one entry covers a whole office however many machines are
-on it. But the entry is only as stable as the ISP's lease: when a public IP
-changes, everyone on that network is locked out at once and the fix is editing
-`ALLOWED_IPS` in Vercel and redeploying. Five separate lines means five chances
-of that. Mobile and hotspot access is blocked by design, and working from home
-is blocked too. This was chosen knowingly over an access-code fallback; a static
-IP from each ISP is what would end the problem permanently.
-
-`ALLOWED_IPS` is inlined at build time, so **changing it in Vercel needs a
-redeploy.** It accepts single addresses and CIDR ranges in both families, e.g.
-`203.0.113.0/24` or `2a02:1234:5678::/48`.
+The list lives in **Vercel → Settings → Environment Variables**, not in the
+repo: `Frontend/my-app/.env` is gitignored and never reaches the deployment.
+`ALLOWED_IPS` is inlined at build time, so **changing it needs a redeploy.**
 
 **Do not put an IP allowlist on Cloud Run.** Its only caller is Vercel, whose
 egress addresses are not fixed; the `CLOUD_API_KEY` already covers it, and the
