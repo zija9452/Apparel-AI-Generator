@@ -275,8 +275,8 @@ const OPTIONS: Array<{ name: string; does: string; needs: ReactNode; missing: st
 ];
 
 const ZIP_FILES: Array<[string, string]> = [
-  ["production_ready_order.ai", "The master Illustrator file with every piece laid out on its own artboard at production scale."],
-  ["{Size}_{Part}_Item{N}.jpg", "A preview render of each exported piece, for checking before print."],
+  ["production_ready_order.ai", "The master Illustrator file with every piece laid out on its own artboard at production scale. A mockup over 5MB is split into one file per size instead - production_ready_order_Small.ai, _Medium.ai, and so on, with the shared accessories in the last one."],
+  ["{Size}/{Size}{N}.jpg", "A preview render of each exported piece, for checking before print. Filed under its size folder and numbered across the whole size - S/Small1.jpg to S/Small15.jpg, then L/Large1.jpg and so on. debug_log.txt carries the 'EXPORT NAME:' line saying which panel each number is. Absent when the job was started with Output set to 'AI file only' (step 06) - the Illustrator file is unchanged either way, and rendering these is most of a heavy job's runtime."],
   ["production_plan.json", "The machine-readable plan the run was built from: sizes, parts, quantities and every text replacement."],
   ["debug_log.txt", "The full run log, including every measurement and every decision the script took."],
   ["sleeve_match_warnings.txt", "Present only when armhole matching had to skip a part."],

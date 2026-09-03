@@ -39,6 +39,9 @@ placket. Turning on the checkbox tells the script to treat every "front" item th
 | **Center design match** (`full_button_center_match`) | Full Button Jersey must be on | Joins a design that crosses the center seam so it lines up across both front halves | A group/shape named exactly `Center` (case/spacing-insensitive), present on **both** sides |
 | **Front/Back design match** (`full_button_front_back_match`) | Full Button Jersey must be on | Resizes Back's design so its shoulder-to-design distance matches Front-Left's | A shape/group whose name **starts with** `match` (e.g. `Match_black`, `MATCH_Front`), on both Front-Left and Back |
 
+There is also a **top-level** checkbox, `front_back_stripes_match`, that runs the row above on
+any garment (see the note in section 5). It is not nested and requires nothing else.
+
 In the UI (`UploadForm.tsx`), the two sub-checkboxes only appear once Full Button Jersey is
 checked, and are visually indented under it — that's a UI nicety, but the code enforces the
 dependency too: `CENTER_MATCH`/`FRONT_BACK_MATCH` logic is gated behind `FULL_BUTTON &&` in
@@ -102,8 +105,22 @@ If Front-Right for a size arrives with no Front-Left queued, you get a warning
 
 ## 5. Front/Back shoulder match (`FRONT_BACK_MATCH`)
 
-Different feature from Center match — this one aligns Back's design to Front-Left's, not
+Different feature from Center match — this one aligns Back's design to the Front's, not
 Front-Left to Front-Right.
+
+> **Also available outside Full Button Jersey.** A second, top-level checkbox —
+> **"Front/Back stripes match (any garment)"** (`front_back_stripes_match`) — runs this exact
+> logic on any garment: normal jersey, hoodie, or full button. The nested checkbox described
+> here is unchanged and still works as it always did. Both feed one JSX flag
+> (`automate_production.jsx:~246`); the nested one is ANDed with `FULL_BUTTON` there, the
+> standalone one is not gated at all. Ticking both is harmless — it is the same flag.
+>
+> The only difference between the two cases is **which panel is measured**: `front-left` when
+> Full Button splits the front, the plain `front` panel otherwise. Everything after that is
+> identical — one shoulder distance is measured and applied to **both** of Back's shoulders.
+> On a one-piece front the walk that looks for the `Match_` crossing is capped at half the
+> panel width instead of the full width, because a whole front has a second shoulder on the
+> far side of the neckline that a full-width walk could wrap onto and measure by mistake.
 
 - **What's measured:** the horizontal distance along the shoulder/top edge, from Front-Left's
   own shoulder-tip corner (its outer, non-seam side) to where its `match`-prefixed shape

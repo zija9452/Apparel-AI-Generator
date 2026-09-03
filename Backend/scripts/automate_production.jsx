@@ -176,6 +176,25 @@ function runAutomation() {
         var ORDER_FLOOR_Y = -7500; // no new row may start below this
         var orderDocIndex = 1;     // 1 -> production_ready_order.ai
         var orderDocFiles = [];    // every file name actually saved, in order
+        // SPLIT PER SIZE: a SECOND reason to start a new order file, on top of
+        // the canvas-overflow rule above. Set by illustrator_automation.py when
+        // the mockup on disk is over 5 MB (see the note there for the measured
+        // reasoning) - never a checkbox, so nothing changes for a light mockup.
+        //
+        // The effect is one .ai per size instead of one .ai per canvas-full:
+        // ~10 panels per document instead of 40+, which is what the export
+        // slowdown and the end-of-run PARM failures were both traced to.
+        // Everything else - saving, closing, flushing the export queue, dropping
+        // the cross-document caches - is startNextOrderDoc's existing job.
+        var SPLIT_PER_SIZE = (plan.split_per_size === true);
+        // The size that owns the file currently being built, and how many files
+        // that size has needed so far (a size too tall for one canvas still
+        // splits, and its second file becomes _Large_2.ai). "Universal"
+        // deliberately never sets this: accessories are one shared piece for the
+        // whole order, not a size, so they stay in whichever file is open -
+        // normally the last size's - per explicit instruction.
+        var orderDocLabel = null;
+        var orderLabelSeen = {};
         var margin = 500, currentX = -7500, currentY = ORDER_TOP_Y, artboardCount = 0, rowMaxHeight = 0;
         // Continuous per-part instance numbering (replaces the old _Item/_Qty suffixes)
         var partCounters = {};
@@ -232,18 +251,35 @@ function runAutomation() {
         // Placket a per-size panel instead of one Universal piece (a button
         // placket's length scales with garment size).
         var FULL_BUTTON = (plan.full_button_jersey === true);
-        // Both sub-features below only ever apply inside Full Button Jersey
-        // and are separately opt-in (frontend checkboxes nested under Full
-        // Button Jersey, default OFF) - each is independent extra risk on
-        // top of the base Front-Left/Front-Right split, so a job that just
-        // wants the split without either matching feature is unaffected.
+        // CENTER_MATCH and PATTERN_MATCH below only ever apply inside Full
+        // Button Jersey and are separately opt-in (frontend checkboxes nested
+        // under Full Button Jersey, default OFF) - each is independent extra
+        // risk on top of the base Front-Left/Front-Right split, so a job that
+        // just wants the split without either matching feature is unaffected.
         var CENTER_MATCH = (plan.full_button_center_match === true);
-        // Front/Back design match (internal helpers still named "shoulder" -
-        // pmApplyBackShoulderMatch/pmMeasureShoulderTarget - since that's
-        // the mechanism: Back's own design is resized so its shoulder-to-
-        // design distance matches Front-Left's, keeping the two panels'
-        // designs visually aligned).
-        var FRONT_BACK_MATCH = (plan.full_button_front_back_match === true);
+        // FRONT/BACK STRIPES MATCH: STANDALONE, every garment type. Internal
+        // helpers are still named "shoulder" (pmApplyBackShoulderMatch/
+        // pmMeasureShoulderTarget) since that IS the mechanism: Back's own
+        // Match_ shape is resized so its shoulder-to-shape distance equals the
+        // FRONT's, keeping the two panels' designs visually aligned.
+        //
+        // TWO checkboxes reach this one flag, deliberately:
+        //   - plan.full_button_front_back_match - the ORIGINAL, still nested
+        //     under Full Button Jersey on the form, KEPT EXACTLY AS IT WAS. It
+        //     is ANDed with FULL_BUTTON here, which is what every call site
+        //     used to do individually, so a stray true on a non-full-button
+        //     job still means nothing - unchanged behaviour for every existing
+        //     job and every plan.json saved before this.
+        //   - plan.front_back_stripes_match - NEW, its own top-level checkbox,
+        //     no group, no parent. Turns the SAME logic on for any garment.
+        //
+        // The logic itself needed nothing full-button-specific: it measures ONE
+        // front shoulder and applies that single distance to BOTH of Back's
+        // shoulders. So it now runs on whichever front part the job actually
+        // has - Front-Left when FULL_BUTTON splits the front, the plain "front"
+        // panel otherwise (normal jersey AND hoodie alike).
+        var FRONT_BACK_MATCH = (plan.front_back_stripes_match === true ||
+                                (FULL_BUTTON && plan.full_button_front_back_match === true));
         // PATTERN MATCH: gated by its own frontend checkbox (nested under
         // Full Button Jersey, default OFF). ONLY runs the striped/background
         // seam-continuity shift (pmProcessStripeSeam/pmStripeSeamShift) when
@@ -534,8 +570,27 @@ function runAutomation() {
         // their queue entry, so each panel is rendered exactly once, from its
         // final state. Flushing must stay ahead of saveOrderDoc(), which removes
         // artboard 0 and would shift every stored index by one.
-        var exportQueue = {};     // instName -> { idx, folder, name }
+        var exportQueue = {};     // instName -> { idx, folder, name, file }
         var exportOrder = [];     // insertion order, so the log reads as built
+        // JPG FILE NAMES: sizeLabel -> how many JPGs that size has been given.
+        // The written file is named <size><n> - Small1, Small2 ... Small15, and
+        // Large starts again at Large1 - per explicit instruction, replacing the
+        // old <size>_<part>_Item<n> (Small_Back_Item1). The number runs across
+        // the WHOLE size, not per part, so the part name is gone from the file
+        // name entirely; debug_log.txt carries the instance -> file mapping for
+        // anyone who needs to know which panel a JPG actually is.
+        //
+        // Deliberately NOT part of exportQueue: the queue is emptied by every
+        // flushExports, and a size that spans two order documents must keep
+        // counting (Small1..Small10 in one file, Small11..Small15 in the next)
+        // instead of restarting and overwriting its own renders.
+        var exportFileCounters = {};
+        // OUTPUT MODE (form Section 06, plan.export_mode): "ai_only" saves the
+        // order .ai exactly as always and skips the render phase entirely -
+        // which on a heavy mockup is most of the job's runtime. Anything else,
+        // including a plan.json written before this option existed, means render
+        // as usual, so nothing changes unless it is deliberately chosen.
+        var EXPORT_JPG = (plan.export_mode !== "ai_only");
         var parmContext = { size: "", part: "", instance: "" };
         var sleeveMatchD = {};        // sizeLabel -> { units: [{d,anchor,full}, ...], fromPart } - measured once from Front's right armhole, mirrored everywhere else
         var sleeveMatchWarnings = [];
@@ -623,7 +678,7 @@ function runAutomation() {
         // placed for that size (last-wins, same simplicity as pmLastSleevePanel).
         var ribCuffSleeveBySize = {};
         var GAP_5MM_PT = 5 * SM_MM;
-        var pmShoulderTargetDist = {}; // sizeLabel -> pt distance from Front-Left's own shoulder edge to its Match shape (SHOULDER-MATCH, see pmMeasureShoulderTarget/pmApplyBackShoulderMatch)
+        var pmShoulderTargetDist = {}; // sizeLabel -> pt distance from the FRONT's own shoulder edge to its Match shape - Front-Left when FULL_BUTTON splits the front, the plain "front" panel otherwise (SHOULDER-MATCH, see pmMeasureShoulderTarget/pmApplyBackShoulderMatch)
         var placketMatchWarnings = [];
         var backLabelWarnings = []; // BACK-LABEL fallback events (neckline center not detected), see placeBackLabel
         if (SM_ON) {
@@ -771,6 +826,23 @@ function runAutomation() {
                     currentX = -7500;
                     currentY -= (rowMaxHeight + refContext.vSpacing);
                     rowMaxHeight = 0;
+                }
+                // SPLIT PER SIZE: a heavy mockup (see SPLIT_PER_SIZE at the top
+                // of main) starts a fresh .ai for EVERY size, not only when the
+                // canvas runs out. Skipped while this file is still empty -
+                // there would be nothing to save - and skipped for "Universal",
+                // which is not a size: the shared accessories ride along in
+                // whichever file is open, per explicit instruction.
+                if (SPLIT_PER_SIZE && artboardCount > 0 && sizeLabel !== "Universal") {
+                    startNextOrderDoc("heavy mockup - one .ai per size, next is " + sizeLabel);
+                }
+                // Claim the (possibly brand-new) file for this size so
+                // orderFileName can name it after the size. The counter goes
+                // back to 1 here on purpose: a "_2" earned by a PREVIOUS size
+                // that overflowed must never leak into this size's file name.
+                if (SPLIT_PER_SIZE && sizeLabel !== "Universal") {
+                    orderDocLabel = sizeLabel;
+                    orderLabelSeen[sizeLabel] = 1;
                 }
                 // WHOLE-SIZE ROLLOVER: move the ENTIRE size to a new .ai file
                 // when what is left of this one cannot hold it. Skipped when
@@ -1298,8 +1370,47 @@ function runAutomation() {
                                                                     var shPct = (curH > 0.01) ? (targetH / curH) * 100 : 100;
                                                                     rp.resize(swPct, shPct, true, true, true, true, 100, Transformation.TOPLEFT);
                                                                 }
-                                                                rp.left = baseShape.left - sideMargin; rp.top = patternBottom + origDistFromBottom;
-                                                                log("   - Rib/cuff line matched to test print: " + (Math.round((origDistFromBottom / 72) * 100) / 100) + "in from bottom, " + (Math.round((origH / 72) * 100) / 100) + "in tall.");
+                                                                // STROKE OVERHANG - without this the rib lands half its own
+                                                                // stroke width TOO LOW, on every size.
+                                                                //
+                                                                // The two reads above and the write below disagree about
+                                                                // whether a stroke counts:
+                                                                //   - `rp.geometricBounds` EXCLUDES the stroke, so
+                                                                //     origDistFromBottom is the distance to the rib's
+                                                                //     unpainted path.
+                                                                //   - `rp.top` (like `.left`) is visibleBounds[1] and
+                                                                //     INCLUDES it, so assigning that distance puts the
+                                                                //     rib's PAINTED top where its path was meant to be.
+                                                                // Everything then sits strokeWidth/2 low, and the bottom of
+                                                                // the band is clipped away by the panel.
+                                                                //
+                                                                // Measured on job Knuckle_Headz_Mint: the mockup's "rib" is
+                                                                // ONE PathItem carrying a 131.9pt stroke - geometric height
+                                                                // 1.959in but PAINTED height 3.791in, geometric top 1.938in
+                                                                // above the panel bottom but painted top 2.854in. The log
+                                                                // dutifully printed "1.96in from bottom, 1.96in tall" (both
+                                                                // geometric, both correct) while every exported sleeve had
+                                                                // its rib 0.90in lower than the test print, with the mint
+                                                                // gap covering the pinstripes that should run through it.
+                                                                //
+                                                                // Only the GEOMETRY was stretched by ribScaleY (resize above
+                                                                // passes lineScale=100, so the stroke width is untouched by
+                                                                // this script and by alignAndScale before it - confirmed,
+                                                                // 131.9pt in the mockup AND in the finished order file). So
+                                                                // the un-stretch applies to the geometric distance only and
+                                                                // the overhang is added back at full size afterwards.
+                                                                //
+                                                                // Read after the resize so it can never go stale, and zero
+                                                                // for an unstroked path - which is exactly the old
+                                                                // behaviour, so nothing changes for a rib drawn without one.
+                                                                var rbAfter = rp.geometricBounds, rvAfter = rp.visibleBounds;
+                                                                var strokeTopOverhang = rvAfter[1] - rbAfter[1];
+                                                                if (!(strokeTopOverhang > 0)) strokeTopOverhang = 0;
+                                                                rp.left = baseShape.left - sideMargin; rp.top = patternBottom + origDistFromBottom + strokeTopOverhang;
+                                                                log("   - Rib/cuff line matched to test print: path " + (Math.round((origDistFromBottom / 72) * 100) / 100) + "in from bottom, " + (Math.round((origH / 72) * 100) / 100) + "in tall" +
+                                                                    (strokeTopOverhang > 0
+                                                                        ? "; + " + (Math.round((strokeTopOverhang / 72) * 100) / 100) + "in stroke overhang -> painted top " + (Math.round(((origDistFromBottom + strokeTopOverhang) / 72) * 100) / 100) + "in from bottom, painted height " + (Math.round(((rvAfter[1] - rvAfter[3]) / 72) * 100) / 100) + "in."
+                                                                        : " (unstroked)."));
                                                             } catch (eRib) {
                                                                 log("   - WARNING: could not align rib/cuff path " + p + ": " + eRib.message);
                                                             }
@@ -1381,7 +1492,7 @@ function runAutomation() {
                                                 // distance now, before pmProcessPanel's placket-match
                                                 // join/mirror can touch this panel's content.
                                                 if (FRONT_BACK_MATCH && isFrontLeft(item.part_name)) {
-                                                    pmMeasureShoulderTarget(baseShape, pastedDesign, sizeLabel);
+                                                    pmMeasureShoulderTarget(baseShape, pastedDesign, sizeLabel, "Front-Left", true);
                                                 }
                                                 // STRIPE/BACKGROUND SEAM CONTINUITY: gated by its own
                                                 // PATTERN_MATCH checkbox (independent of Center-Match) - only
@@ -1405,10 +1516,30 @@ function runAutomation() {
                                                 if (CENTER_MATCH) {
                                                     pmProcessPanel(pastedPattern, baseShape, pastedDesign, sizeLabel, item.part_name, abIdx, instanceName);
                                                 }
-                                            } else if (FULL_BUTTON && FRONT_BACK_MATCH && isBack(item.part_name)) {
-                                                // SHOULDER-MATCH: resize Back's own Match shape so its
-                                                // shoulder-to-shape distance matches Front-Left's, then
-                                                // re-export Back's JPG with the corrected shape.
+                                            } else if (FRONT_BACK_MATCH && isFront(item.part_name)) {
+                                                // STRIPES MATCH on a job whose front is ONE piece (normal
+                                                // jersey or hoodie): the plain "front" panel plays exactly
+                                                // the role Front-Left plays above - measured, never
+                                                // modified - and Back below is adjusted to it. isFront() is
+                                                // "front" EXACTLY, so this can never collide with the
+                                                // full-button branch: a job that splits the front has no
+                                                // plain "front" part at all, only "front-left"/"front-right".
+                                                pmMeasureShoulderTarget(baseShape, pastedDesign, sizeLabel, "Front", false);
+                                            }
+
+                                            // SHOULDER-MATCH: resize Back's own Match shape so its
+                                            // shoulder-to-shape distance matches the Front's, then
+                                            // re-export Back's JPG with the corrected shape.
+                                            //
+                                            // No longer gated on FULL_BUTTON, and lifted out of the
+                                            // else-chain above (isBack is mutually exclusive with every
+                                            // branch there): Back is the same panel whatever the front
+                                            // looks like, and the ONE front distance stored above is what
+                                            // it matches. If no front was measured for this size - the
+                                            // Match_ shape is missing, or the plan happens to list Back
+                                            // before Front - pmApplyBackShoulderMatch logs it and leaves
+                                            // Back untouched, same soft behaviour as before.
+                                            if (FRONT_BACK_MATCH && isBack(item.part_name)) {
                                                 pmApplyBackShoulderMatch(baseShape, pastedDesign, sizeLabel, abIdx, instanceName);
                                             }
 
@@ -1453,9 +1584,16 @@ function runAutomation() {
                                                 placeBackLabel(baseShape, pastedDesign, sizeLabel, FULL_BUTTON);
                                                 // If this panel also went through SHOULDER-MATCH, Match_ may
                                                 // now be sitting too close to the label that was just placed
-                                                // - resolve that (moves Match_, re-matches Front) rather than
-                                                // ever moving the label. See pmResolveBackLabelClearance.
-                                                if (FULL_BUTTON && FRONT_BACK_MATCH) {
+                                                // - resolve that (label down in capped steps first, then
+                                                // Match_ up for the remainder, then re-match) rather than
+                                                // ever moving the label alone. See pmResolveBackLabelClearance.
+                                                //
+                                                // Un-gated from FULL_BUTTON along with SHOULDER-MATCH itself:
+                                                // the collision it resolves is caused by the resize
+                                                // pmApplyBackShoulderMatch just did, so wherever that runs
+                                                // this has to run too, or a normal jersey's grown Match_ arc
+                                                // would be free to sit on the back label.
+                                                if (FRONT_BACK_MATCH) {
                                                     pmResolveBackLabelClearance(baseShape, pastedDesign, sizeLabel, abIdx, instanceName);
                                                 }
                                             }
@@ -1631,7 +1769,7 @@ function runAutomation() {
                         fitArtboardToPanel(abIdx, baseShape, instanceName);
 
                         log("Queued JPG for instance: " + instanceName);
-                        queueExport( abIdx, exportFolderFor(sizeLabel), instanceName);
+                        queueExport( abIdx, exportFolderFor(sizeLabel), instanceName, sizeLabel);
                         log("--- FINISHED " + instanceName + " ---\n");
                         
                         if (ribCuffAnchored) {
@@ -3247,7 +3385,22 @@ function runAutomation() {
     // why; everything below is the machinery)
     // =====================================================================
 
+    // SPLIT-PER-SIZE names the file after the size it holds
+    // (production_ready_order_Large.ai) instead of a running number, so an
+    // operator can tell the files apart without opening them. The label is the
+    // SAME string the export folders use (Large/, 2XL/, ...), so a file and its
+    // renders always carry the same name.
+    //
+    // A size that still overflows one canvas gets _Large_2.ai, _Large_3.ai -
+    // the per-piece overflow check has not gone away, it just rarely fires now.
+    // Falls back to the numeric scheme whenever the split is off or no size owns
+    // the file yet, so a normal job's file names are untouched.
     function orderFileName(idx) {
+        if (SPLIT_PER_SIZE && orderDocLabel) {
+            var seen = orderLabelSeen[orderDocLabel] || 1;
+            var safeLabel = String(orderDocLabel).replace(/[^a-zA-Z0-9]+/g, "_");
+            return "production_ready_order_" + safeLabel + ((seen > 1) ? ("_" + seen) : "") + ".ai";
+        }
         return (idx <= 1) ? "production_ready_order.ai" : ("production_ready_order_" + idx + ".ai");
     }
 
@@ -3321,8 +3474,12 @@ function runAutomation() {
     // caller) would otherwise point into a closed document.
     function startNextOrderDoc(reason) {
         var closing = orderFileName(orderDocIndex);
-        log("ORDER FILE: " + reason + " - saving " + closing + " and continuing in " + orderFileName(orderDocIndex + 1) + ".");
-        updateStatus("Canvas full - saving " + closing + "...", 90, false);
+        // The NEXT file's name is not predictable here under SPLIT_PER_SIZE (it
+        // depends on the size that is about to claim it), so this only reports
+        // what is being closed. The new file logs its own name below, after the
+        // label and counter have settled.
+        log("ORDER FILE: " + reason + " - saving " + closing + " and continuing in a new file.");
+        updateStatus("Saving " + closing + "...", 90, false);
         buildPendingHoodieExtras();
         // BEFORE saveOrderDoc(): it drops artboard 0, which would shift every
         // queued artboard index by one. And before close(), obviously - the
@@ -3332,6 +3489,13 @@ function runAutomation() {
         try { orderDoc.close(SaveOptions.DONOTSAVECHANGES); } catch (eClose) { log("ORDER FILE: could not close " + closing + ": " + eClose.message); }
 
         orderDocIndex++;
+        // Same size, next file: only reached when a single size is too tall for
+        // one canvas, which gives _Large_2.ai. Bumped AFTER saveOrderDoc above
+        // so the file just written keeps its own name, and immediately reset to
+        // 1 by the size-boundary block when a NEW size claims this document.
+        if (SPLIT_PER_SIZE && orderDocLabel) {
+            orderLabelSeen[orderDocLabel] = (orderLabelSeen[orderDocLabel] || 1) + 1;
+        }
         orderDoc = app.documents.add(DocumentColorSpace.CMYK);
         clearOrderDocSwatches(orderDoc);
         app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS;
@@ -7297,7 +7461,7 @@ function runAutomation() {
             // same as the saved .ai file.
             try {
                 log("Re-queued JPG for " + left.instName + " (content updated by PLACKET-MATCH).");
-                queueExport( left.artboardIdx, exportFolderFor(sizeLabel), left.instName);
+                queueExport( left.artboardIdx, exportFolderFor(sizeLabel), left.instName, sizeLabel);
             } catch (eReexp) { log("PLACKET-MATCH: could not re-export " + left.instName + ": " + eReexp.message); }
         } catch (e) { pmWarn(sizeLabel, partName, "error during placket matching: " + e.message); }
     }
@@ -8149,8 +8313,12 @@ function runAutomation() {
         }
     }
 
-    // SHOULDER-MATCH (full-button jersey only): measured once per size, on
-    // Front-Left, the moment its own panel is built. NOT a bounding-box
+    // SHOULDER-MATCH: measured once per size, on the job's front panel, the
+    // moment that panel's own clip is built. `partLabel` is only for logs;
+    // `isSplitFront` says whether that panel is a full-button HALF front
+    // (Front-Left) or a whole one-piece front (normal jersey / hoodie) - see
+    // the travel-cap note below, it is the single geometric difference between
+    // the two cases. NOT a bounding-box
     // distance, and NOT a raw-cut-edge distance either (both earlier
     // versions were wrong - the Match shape's bbox top legitimately bleeds
     // past the panel's own top edge, and the raw cut-line corner isn't
@@ -8163,31 +8331,52 @@ function runAutomation() {
     // Captured here (before any later placket-match join/mirror can touch
     // Front-Left's content) so the target reflects Front-Left's own design
     // as originally drawn, regardless of what happens to it afterwards.
-    function pmMeasureShoulderTarget(baseShape, pastedDesign, sizeLabel) {
+    function pmMeasureShoulderTarget(baseShape, pastedDesign, sizeLabel, partLabel, isSplitFront) {
+        partLabel = partLabel || "Front-Left"; // ES3: no default parameters
         try {
             var lines = pmFindMatchLines(pastedDesign);
-            if (lines.length === 0) { log("SHOULDER-MATCH: no Match shape found on Front-Left for size " + sizeLabel + " - Back will not be adjusted."); return; }
+            if (lines.length === 0) { log("SHOULDER-MATCH: no Match shape found on " + partLabel + " for size " + sizeLabel + " - Back will not be adjusted."); return; }
             var panelB = baseShape.geometricBounds; // [L,T,R,B]
             var outline = _smSampleOutline(baseShape, 48);
-            if (outline.length < 8) { pmWarn(sizeLabel, "Front-Left", "could not sample panel outline for shoulder-match"); return; }
+            if (outline.length < 8) { pmWarn(sizeLabel, partLabel, "could not sample panel outline for shoulder-match"); return; }
             var seam = _smInsetOutline(outline, SM_SEAM_PT);
-            var corner = pmSeamCorner(outline, seam, panelB[0], panelB[1]); // Front-Left's outer (non-seam) side = its LEFT bound
-            if (!corner) { pmWarn(sizeLabel, "Front-Left", "could not resolve the -7mm stitch-line shoulder corner"); return; }
+            // LEFT bound either way. On Front-Left that is its outer (non-seam)
+            // side, the only shoulder it has. On a one-piece front it is simply
+            // the left shoulder - ONE side is measured and applied to both of
+            // Back's shoulders, exactly as before (the front design is drawn
+            // symmetric about the centre line, so both sides read the same).
+            var corner = pmSeamCorner(outline, seam, panelB[0], panelB[1]);
+            if (!corner) { pmWarn(sizeLabel, partLabel, "could not resolve the -7mm stitch-line shoulder corner"); return; }
             var panelW = Math.abs(panelB[2] - panelB[0]);
-            var dist = pmSeamShoulderCrossDist(outline, seam, corner, lines, panelW);
-            if (dist === null) { pmWarn(sizeLabel, "Front-Left", "Match shape does not reach its own shoulder stitch line - cannot measure shoulder distance"); return; }
-            log("SHOULDER-MATCH-DIAG [" + sizeLabel + "] Front-Left: stitch corner=(" + _smMM(corner.S[0]) + "," + _smMM(corner.S[1]) + ")mm, dist to Match crossing=" + _smMM(dist) + "mm.");
+            // How far the walk from the shoulder corner may travel looking for
+            // the Match_ crossing. A split front half spans ONE shoulder, so a
+            // full panel-width of travel can never wrap onto a second one. A
+            // WHOLE front spans BOTH shoulders with the neckline between them,
+            // and its neck is far deeper than Back's - a full-width walk from
+            // the left shoulder tip can descend into the neck curve and climb
+            // back up the RIGHT shoulder, where a Match_ line would return a
+            // perfectly plausible but badly wrong (far too large) distance, and
+            // nothing downstream could tell. Half the width is the same
+            // physical reach a split half already gets, measured on the same
+            // garment - not a tighter rule, the same one.
+            var travelCap = isSplitFront ? panelW : (panelW * 0.5);
+            var dist = pmSeamShoulderCrossDist(outline, seam, corner, lines, travelCap);
+            if (dist === null) { pmWarn(sizeLabel, partLabel, "Match shape does not reach its own shoulder stitch line - cannot measure shoulder distance"); return; }
+            log("SHOULDER-MATCH-DIAG [" + sizeLabel + "] " + partLabel + ": stitch corner=(" + _smMM(corner.S[0]) + "," + _smMM(corner.S[1]) + ")mm, dist to Match crossing=" + _smMM(dist) + "mm (walk capped at " + _smMM(travelCap) + "mm).");
             pmShoulderTargetDist[sizeLabel] = dist;
-            log("SHOULDER-MATCH: Front-Left stitch-line shoulder-to-Match distance for size " + sizeLabel + " = " + _smMM(dist) + "mm (target for Back).");
-        } catch (e) { pmWarn(sizeLabel, "Front-Left", "error measuring shoulder-match target: " + e.message); }
+            log("SHOULDER-MATCH: " + partLabel + " stitch-line shoulder-to-Match distance for size " + sizeLabel + " = " + _smMM(dist) + "mm (target for Back).");
+        } catch (e) { pmWarn(sizeLabel, partLabel, "error measuring shoulder-match target: " + e.message); }
     }
 
-    // SHOULDER-MATCH (full-button jersey only): Back carries ONE Match
-    // shape wide enough to reach both shoulders. Front-Left's own
-    // stitch-line shoulder-to-crossing distance is the target for BOTH of
-    // Back's shoulders (Front-Left/Front-Right are the same design,
-    // mirrored, so the chord distance on each side is identical - unlike a
-    // raw X-difference, a chord length carries no left/right sign to flip).
+    // SHOULDER-MATCH: Back carries ONE Match shape wide enough to reach both
+    // shoulders. The FRONT's own stitch-line shoulder-to-crossing distance -
+    // the single number pmMeasureShoulderTarget stored, measured on one
+    // shoulder - is the target for BOTH of Back's shoulders. That holds for
+    // either kind of front: Front-Left/Front-Right are the same design
+    // mirrored, and a one-piece front is drawn symmetric about its own centre
+    // line, so the chord distance reads the same on each side either way
+    // (unlike a raw X-difference, a chord length carries no left/right sign to
+    // flip, which is why one measurement transfers to both shoulders at all).
     // Two independent knobs are needed to hit two targets at once: a
     // uniform SCALE (about the shape's own combined center - Alt+Shift-
     // style, never tilted) controls overall size, and a horizontal-only
@@ -8202,7 +8391,7 @@ function runAutomation() {
     function pmApplyBackShoulderMatch(baseShape, pastedDesign, sizeLabel, artboardIdx, instName) {
         try {
             var target = pmShoulderTargetDist[sizeLabel];
-            if (target === undefined) { log("SHOULDER-MATCH: no Front-Left target distance stored for size " + sizeLabel + " - Back left as-is."); return; }
+            if (target === undefined) { log("SHOULDER-MATCH: no Front target distance stored for size " + sizeLabel + " - Back left as-is."); return; }
             var lines = pmFindMatchLines(pastedDesign);
             if (lines.length === 0) { log("SHOULDER-MATCH: no Match shape found on Back for size " + sizeLabel + " - nothing to resize."); return; }
 
@@ -8231,7 +8420,7 @@ function runAutomation() {
                 "mm | right stitch corner=(" + _smMM(rightCorner.S[0]) + "," + _smMM(rightCorner.S[1]) + ")mm curDist=" + _smMM(m0.right) + "mm target=" + _smMM(target) + "mm.");
             var TOL = 0.01; // pt, per side
             if (Math.abs(m0.left - target) < TOL && Math.abs(m0.right - target) < TOL) {
-                log("SHOULDER-MATCH [" + sizeLabel + "]: Back's stitch-line shoulder-to-Match distances already match Front-Left on both sides - no adjustment needed.");
+                log("SHOULDER-MATCH [" + sizeLabel + "]: Back's stitch-line shoulder-to-Match distances already match the Front on both sides - no adjustment needed.");
                 return;
             }
 
@@ -8291,7 +8480,7 @@ function runAutomation() {
 
             try {
                 log("Re-queued JPG for " + instName + " (Back resized by SHOULDER-MATCH).");
-                queueExport( artboardIdx, exportFolderFor(sizeLabel), instName);
+                queueExport( artboardIdx, exportFolderFor(sizeLabel), instName, sizeLabel);
             } catch (eReexp) { log("SHOULDER-MATCH: could not re-export " + instName + ": " + eReexp.message); }
         } catch (e) { pmWarn(sizeLabel, "Back", "error during shoulder matching: " + e.message); }
     }
@@ -9743,6 +9932,13 @@ function runAutomation() {
         var cache = exportFolderFor.cache;
 
         if (!sizeLabel || sizeLabel === "Universal") return outputDir;
+        // AI FILE ONLY: the folder is created HERE, when a panel is queued, but
+        // whether anything gets rendered into it is decided later, in
+        // flushExports. So an ai_only job used to finish with an empty XL/ and
+        // 2XL/ sitting in the output (confirmed on job White_testing). Nothing
+        // will be written, so create nothing; the returned path is still stored
+        // on the queue entry and simply never used.
+        if (!EXPORT_JPG) return outputDir;
         var code = sizeFolderCode(sizeLabel);
         if (!code) return outputDir;
         if (cache[code]) return cache[code];
@@ -9767,9 +9963,34 @@ function runAutomation() {
     // exportResult directly. Queuing by NAME is what collapses the repeats: a
     // step that moves a panel after it was first queued just replaces the entry
     // with the newer artboard index, instead of paying for another render.
-    function queueExport(idx, folder, name) {
-        if (!exportQueue.hasOwnProperty(name)) exportOrder.push(name);
-        exportQueue[name] = { idx: idx, folder: folder, name: name };
+    // The JPG's own file name: the size, then a number that runs across the
+    // whole size - Small1, Small2, ... - with every size counting from 1 again.
+    // Universal accessories have no size to number by (they render to the output
+    // root, not a size folder), so they keep their instance name: Twill_Tape_Item1.
+    function nextExportFileName(sizeLabel, instanceName) {
+        if (!sizeLabel || sizeLabel === "Universal") return instanceName;
+        var n = (exportFileCounters[sizeLabel] || 0) + 1;
+        exportFileCounters[sizeLabel] = n;
+        return sizeLabel + n;
+    }
+
+    function queueExport(idx, folder, name, sizeLabel) {
+        // ALREADY QUEUED = a re-export (PLACKET-MATCH and SHOULDER-MATCH both
+        // re-queue a panel whose content they just changed). Point the entry at
+        // the newer artboard and KEEP the file name it was already given: taking
+        // a fresh number here would burn one number per re-export and leave gaps,
+        // and the panel would land in a different file than the log promised.
+        if (exportQueue.hasOwnProperty(name)) {
+            exportQueue[name].idx = idx;
+            exportQueue[name].folder = folder;
+            return;
+        }
+        exportOrder.push(name);
+        var file = nextExportFileName(sizeLabel, name);
+        exportQueue[name] = { idx: idx, folder: folder, name: name, file: file };
+        // The file name no longer says which panel this is, so record the
+        // mapping where an operator can find it.
+        log("EXPORT NAME: " + name + " -> " + file + ".jpg");
     }
 
     // Render everything queued for the CURRENT document, then clear the queue.
@@ -9779,8 +10000,14 @@ function runAutomation() {
         var names = exportOrder, jobs = exportQueue;
         exportOrder = []; exportQueue = {};
         if (!names.length) return 0;
+        // AI FILE ONLY: the queue is still emptied above - it has to be, or it
+        // would grow for the whole job - only the rendering is skipped.
+        if (!EXPORT_JPG) {
+            log("EXPORT: skipped " + names.length + " JPG(s) for " + why + " - this job is set to 'AI file only'.");
+            return 0;
+        }
         log("EXPORT: rendering " + names.length + " JPG(s) for " + why + " - one per panel, from its final state.");
-        var done = 0;
+        var done = 0, failed = 0;
         for (var i = 0; i < names.length; i++) {
             var job = jobs[names[i]];
             if (!job) continue;
@@ -9788,14 +10015,26 @@ function runAutomation() {
             // which looks like a hung job on the frontend and starves the
             // watchdog that reads this file's mtime.
             updateStatus("Exporting (" + (i + 1) + " of " + names.length + ")...", 90, false);
-            exportResult(orderDoc, job.idx, job.folder, job.name);
-            done++;
+            if (exportResult(orderDoc, job.idx, job.folder, job.file || job.name)) done++;
+            else failed++;
         }
-        log("EXPORT: " + done + " JPG(s) written for " + why + ".");
+        // QUEUED vs WRITTEN. The render used to be the one step that could fail
+        // in complete silence - exportResult swallowed every error - so a
+        // permission problem, a full disk or two panels resolving to the same
+        // file name showed up only as "kuch files kam hain", days later. The two
+        // numbers must match; when they do not, the EXPORT FAILED lines above
+        // name the files.
+        log("EXPORT: " + done + " JPG(s) written of " + names.length + " queued for " + why +
+            (failed ? " - " + failed + " FAILED, see the EXPORT FAILED line(s) above." : "."));
         return done;
     }
 
+    // Returns true only when the file was actually written. The old version
+    // returned nothing and caught every error into an empty block, so a failed
+    // render was indistinguishable from a successful one - see the queued-vs-
+    // written check in flushExports.
     function exportResult(doc, idx, folder, name) {
+        var target = folder + "/" + name.replace(/[^a-zA-Z0-9]/g, '_') + ".jpg";
         try {
             doc.artboards.setActiveArtboardIndex(idx);
             var opt = new ExportOptionsJPEG(); opt.artBoardClipping = true; opt.antiAliasing = true; opt.imageColorSpace = ImageColorSpace.CMYK;
@@ -9811,8 +10050,12 @@ function runAutomation() {
             // means "optimized for web viewing" = Baseline Optimized, which some
             // print RIPs handle worse.
             opt.optimization = false;
-            doc.exportFile(new File(folder + "/" + name.replace(/[^a-zA-Z0-9]/g, '_') + ".jpg"), ExportType.JPEG, opt);
-        } catch (e) {}
+            doc.exportFile(new File(target), ExportType.JPEG, opt);
+            return true;
+        } catch (e) {
+            log("EXPORT FAILED: " + target + " - " + e.message);
+            return false;
+        }
     }
 
     // Paints every stroked path in `container` one color. `strokeColor` is the
@@ -10639,7 +10882,7 @@ function runAutomation() {
         var finalRect = [placedX, placedY, placedX + w, placedY - h];
         var ab = orderDoc.artboards.add(finalRect);
         ab.artboardRect = finalRect; ab.name = instanceName;
-        queueExport( orderDoc.artboards.length - 1, exportFolderFor(sizeLabel), instanceName);
+        queueExport( orderDoc.artboards.length - 1, exportFolderFor(sizeLabel), instanceName, sizeLabel);
 
         if (hoodStacked) {
             // Consumed no new column - currentX already cleared the hood this
@@ -10730,7 +10973,7 @@ function runAutomation() {
         var finalRect = [dupBorder.left, dupBorder.top, dupBorder.left + bw, dupBorder.top - bh];
         var ab = orderDoc.artboards.add(finalRect);
         ab.artboardRect = finalRect; ab.name = instanceName;
-        queueExport( orderDoc.artboards.length - 1, exportFolderFor(sizeLabel), instanceName);
+        queueExport( orderDoc.artboards.length - 1, exportFolderFor(sizeLabel), instanceName, sizeLabel);
 
         // The Border hangs BELOW its Front, outside the Front's own height, and
         // this function never touched the row-height tracker - so rowMaxHeight
@@ -11283,7 +11526,7 @@ function runAutomation() {
         var finalRect = [currentX, currentY, currentX + fw, currentY - fh];
         var ab = orderDoc.artboards.add(finalRect);
         ab.artboardRect = finalRect; ab.name = instanceName;
-        queueExport( orderDoc.artboards.length - 1, exportFolderFor(sizeLabel), instanceName);
+        queueExport( orderDoc.artboards.length - 1, exportFolderFor(sizeLabel), instanceName, sizeLabel);
         currentX += fw + refContext.spacing;
         if (fh > rowMaxHeight) rowMaxHeight = fh;
         if (currentX > 7500) { currentX = -7500; currentY -= (rowMaxHeight + refContext.vSpacing); rowMaxHeight = 0; }

@@ -1129,6 +1129,38 @@ def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mock
         render_dir = os.path.abspath(os.path.join(job_dir, os.path.basename(job_dir)))
         os.makedirs(render_dir, exist_ok=True)
         
+        # SPLIT PER SIZE (automatic, no checkbox). A heavy mockup is heavy
+        # because of what is IN it - embedded bitmaps, opacity masks,
+        # transparency groups - and every panel in an order document carries its
+        # own copy of that. One document holding 40+ of them is what makes the
+        # export phase crawl and the memory run out: on job Knuckle_Headz_Mint
+        # (10.9 MB mockup) per-panel export time DEGRADED from 60s to 99s as the
+        # flush went on, and all three PARM failures landed in the last 90
+        # seconds of a 2-hour run, alongside "Temp Expand failed" - the
+        # signature of an exhausted process, not of a bad panel. A comparable
+        # job with a 186 KB mockup exported bigger panels at 9.1s each.
+        #
+        # So above the threshold each size gets its own .ai file: ~10 panels per
+        # document instead of 40+, each one short-lived. The splitting machinery
+        # itself is not new - startNextOrderDoc in automate_production.jsx has
+        # always done this when the canvas fills; this only adds a second reason
+        # to trigger it. See SLOW_EXPORTING.md.
+        #
+        # Measured on the mockup as it sits on disk, which is the same number
+        # the operator sees in Explorer.
+        MOCKUP_SPLIT_BYTES = 5 * 1024 * 1024
+        try:
+            mockup_bytes = os.path.getsize(mockup_ai_path)
+        except OSError:
+            mockup_bytes = 0  # unreadable -> behave exactly as before
+        plan_data["split_per_size"] = bool(mockup_bytes > MOCKUP_SPLIT_BYTES)
+        logger.info(
+            "Mockup is %.1f MB -> %s",
+            mockup_bytes / (1024 * 1024),
+            "one order .ai per size" if plan_data["split_per_size"]
+            else "single order .ai (split only if the canvas fills)",
+        )
+
         plan_json_path = os.path.abspath(os.path.join(job_dir, "production_plan.json"))
         with open(plan_json_path, 'w') as f:
             json.dump(plan_data, f)

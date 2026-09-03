@@ -92,7 +92,7 @@ logger = logging.getLogger("apparel-agent")
 # left running. install-agent.ps1 compares this against the version answering
 # on 8765 after it starts, which is the only way it can tell "the new agent is
 # up" from "the OLD agent is still holding the port and answered for it".
-AGENT_VERSION = "0.2.0"
+AGENT_VERSION = "0.3.0"
 
 # Where every job lives on this PC. Renders and the zip are left here on
 # purpose - the designer owns this folder and decides when to clear it.

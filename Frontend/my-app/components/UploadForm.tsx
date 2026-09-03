@@ -860,6 +860,23 @@ export default function UploadForm({
           </Toggle>
 
           <Toggle
+            name="front_back_stripes_match"
+            title="Front/Back stripes match (any garment)"
+            requires={
+              <>
+                A shape whose name starts with <Name>Match_</Name>, present on{" "}
+                <strong>both</strong> Front and Back. The Front is measured, the Back is
+                adjusted. If the name is missing the job still runs and Back is left alone.
+              </>
+            }
+          >
+            The same matching as the option nested under Full Button Jersey, but for any
+            garment &mdash; normal jersey, hoodie or full button. Aligns the Back stripes
+            design to the position of the Front&apos;s stripes. Leave this off if you are
+            already using the Full Button Jersey version.
+          </Toggle>
+
+          <Toggle
             name="preserve_sleeve_rib_distance"
             title="Match sleeve bottom line to test print"
           >
@@ -940,6 +957,46 @@ export default function UploadForm({
             Check this if the Excel sheet has a Logo column (Front/Back/Neck/Sleeve Logo) with
             values.
           </Toggle>
+        </Section>
+
+        <div className="h-px bg-line" />
+
+        {/* -------------------------------------------------- 6 · output */}
+        <Section
+          step="06"
+          title="Output"
+          hint="What this job writes out. The Illustrator file is always produced; the preview renders are optional."
+          icon={<Icon.Layers className="h-4 w-4" />}
+        >
+          <div className="rounded-xl border border-line bg-surface p-4">
+            <p className="text-sm font-semibold text-ink">Preview renders</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted">
+              Rendering the JPEGs is by far the slowest part of a job &mdash; on a heavy mockup it
+              can be most of the total time. Skip it when you only need the Illustrator file.
+            </p>
+            <div className="mt-3 space-y-2.5">
+              <RadioCard
+                name="export_mode"
+                value="ai_jpg"
+                defaultChecked
+                title={
+                  <>
+                    AI file + JPEG previews{" "}
+                    <span className="font-normal text-faint">(default)</span>
+                  </>
+                }
+              >
+                Every piece is rendered to a 300 dpi JPEG under its size folder, alongside the
+                Illustrator file. This is what jobs have always done.
+              </RadioCard>
+              <RadioCard name="export_mode" value="ai_only" title="AI file only">
+                No JPEGs at all. The order Illustrator file is still saved exactly the same way,
+                with every piece on its own artboard &mdash; you can export previews from it by
+                hand later if you need them. The ZIP comes out far smaller and the job finishes
+                much sooner.
+              </RadioCard>
+            </div>
+          </div>
         </Section>
 
         {/* ------------------------------------------------- submit bar */}

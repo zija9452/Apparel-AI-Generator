@@ -865,9 +865,11 @@ def job_options(
     local_tag_enabled: bool = Form(False),
     neck_contrast: bool = Form(False),
     front_back_side_match: bool = Form(False),
+    front_back_stripes_match: bool = Form(False),
     hoodie: bool = Form(False),
     hoodie_center_design_match: bool = Form(False),
     design_scale_mode: str = Form("height"),
+    export_mode: str = Form("ai_jpg"),
 ) -> Dict[str, Any]:
     """Every checkbox on the upload form, declared once.
 
@@ -887,9 +889,11 @@ def job_options(
         "local_tag_enabled": local_tag_enabled,
         "neck_contrast": neck_contrast,
         "front_back_side_match": front_back_side_match,
+        "front_back_stripes_match": front_back_stripes_match,
         "hoodie": hoodie,
         "hoodie_center_design_match": hoodie_center_design_match,
         "design_scale_mode": design_scale_mode,
+        "export_mode": export_mode,
     }
 
 
@@ -966,9 +970,9 @@ async def _build_plan(
         if opt["sleeve_match_mode"] in ("vertical", "horizontal", "resize") else "auto"
     )
     plan_dict["full_button_jersey"] = bool(opt["full_button_jersey"])
-    # Both sub-features only run when full_button_jersey is also on - enforced
-    # in the JSX, not here, so a stray true from a malformed request can't do
-    # anything on a non-full-button job.
+    # All three sub-features only run when full_button_jersey is also on -
+    # enforced in the JSX, not here, so a stray true from a malformed request
+    # can't do anything on a non-full-button job.
     plan_dict["full_button_center_match"] = bool(opt["full_button_center_match"])
     plan_dict["full_button_front_back_match"] = bool(opt["full_button_front_back_match"])
     plan_dict["full_button_pattern_match"] = bool(opt["full_button_pattern_match"])
@@ -977,6 +981,21 @@ async def _build_plan(
     plan_dict["local_tag_enabled"] = bool(opt["local_tag_enabled"])
     plan_dict["neck_contrast"] = bool(opt["neck_contrast"])
     plan_dict["front_back_side_match"] = bool(opt["front_back_side_match"])
+    # FRONT/BACK STRIPES MATCH, standalone: the same logic the nested
+    # full_button_front_back_match checkbox above drives, but for ANY garment.
+    # Both keys are written and the JSX ORs them - the nested one stays ANDed
+    # with full_button_jersey there (unchanged), this one is not gated at all.
+    plan_dict["front_back_stripes_match"] = bool(opt["front_back_stripes_match"])
+    # OUTPUT: "ai_jpg" (default - render a JPEG per piece, what every job has
+    # always done) or "ai_only" (save the order .ai and skip the render phase,
+    # which on a heavy mockup is most of the run). Normalised here like
+    # sleeve_match_mode/design_scale_mode above: anything unrecognised falls back
+    # to the default rather than being passed through, so the stored plan is
+    # always honest about what actually ran. A plan.json saved before this option
+    # existed has no key at all, and the JSX reads that as "ai_jpg" too.
+    plan_dict["export_mode"] = (
+        opt["export_mode"] if opt["export_mode"] in ("ai_jpg", "ai_only") else "ai_jpg"
+    )
     plan_dict["hoodie"] = hoodie
     # Nested under Hoodie on the frontend, so ANDed with it here too: the
     # checkbox stays checked in the DOM if the user ticks it and then unticks

@@ -290,7 +290,7 @@ export default function Home() {
                 >
                   <Icon.Download className="h-4 w-4" />
                   Download the agent
-                  <span className="font-mono text-xs font-medium opacity-80">234 KB</span>
+                  <span className="font-mono text-xs font-medium opacity-80">243 KB</span>
                 </a>
                 <Link
                   href="/docs"

@@ -1,6 +1,6 @@
 # PENDING
 
-Last updated: 2026-08-19
+Last updated: 2026-09-03
 
 ---
 
@@ -173,7 +173,16 @@ andar aana. Dekho PHR 162 (analysis) + 163 (fix).
 
 ---
 
-## 3. Chhoti cheezen
+## 3. Slow_exporting — JPG export bohot slow (2026-09-03)
+
+Poori tafseel alag file me: **[SLOW_EXPORTING.md](SLOW_EXPORTING.md)**
+
+Khulasa: wajah code ya mockup nahi — **Illustrator CC 2015 (19.0.0)** + **0.3 GB free RAM**.
+Karna hai: RAM barhao, Illustrator upgrade karo. Nahi karna: dpi kam karna, design rasterize karna.
+
+---
+
+## 4. Chhoti cheezen
 
 - `automate_production.jsx:880` — braceless `if` jiski indentation se lagta hai ke assignment `if` se bahar hai. Behaviour theek hai aur `node --check` pass hai; braces offer kiye the, edit decline hui thi.
 - SLEEVE-MATCH `covers the full edge` ka ghalat natija — `samplesInside=35/35` un rotated bands par jahan rotation ≥ ~2° hai (Large/XL/2XL). Diagnostic (`SM-COV` block) lagi hui hai, fix nahi. User ka ishara: rotation se ta'alluq hai, general polygon/walk bug nahi.
