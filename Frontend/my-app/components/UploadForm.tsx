@@ -927,6 +927,26 @@ export default function UploadForm({
           </Toggle>
 
           <Toggle
+            name="team_name_scale"
+            title="Team name keeps its width"
+            requires={
+              <>
+                The artwork marked <Name>team name</Name> in the mockup &mdash; either as the
+                layer/group name or in its Attributes <Name>Note</Name>. Spelling is free:{" "}
+                <Name>Team name</Name>, <Name>teamname</Name> and <Name>TEAM_NAME</Name> all count,
+                and it may be numbered (<Name>team name 2</Name>) if a panel carries more than one.
+              </>
+            }
+          >
+            The design is fitted to each panel by HEIGHT, and patterns grade wider faster than they
+            grade taller &mdash; so the team name keeps the same height but covers less and less of
+            the panel as sizes go up (measured on one real pattern: 65% of a Small front, 49% of a
+            6XL). This puts it back on the width percentage it had in the mockup, on every size. It
+            resizes proportionally, keeps its top edge where it was, and centers on the panel.
+            Anything else in the design is untouched.
+          </Toggle>
+
+          <Toggle
             title="Logo personalization"
             badge="needs a logo library"
             checked={logoEnabled}

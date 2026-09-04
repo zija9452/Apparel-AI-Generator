@@ -759,22 +759,80 @@ _FRIENDLY_SIZE_MAP = {
     "XS": "XS", "S": "Small", "M": "Medium", "L": "Large", "XL": "XL",
     "XXL": "2XL", "2XL": "2XL", "3XL": "3XL", "XXXL": "3XL",
     "4XL": "4XL", "XXXXL": "4XL",
-    # Youth codes map to themselves - the pattern names them "YXS Front", not
-    # a spelled-out word.
+    # Youth and toddler codes map to themselves - the pattern names them
+    # "YXS Front" / "2T Front", not a spelled-out word.
     "YXS": "YXS", "YS": "YS", "YM": "YM", "YL": "YL", "YXL": "YXL",
+    "1T": "1T", "2T": "2T", "3T": "3T", "4T": "4T", "5T": "5T",
+    "6T": "6T", "7T": "7T", "8T": "8T", "9T": "9T", "10T": "10T",
 }
+
+# Spelled-out words that mean a bare size code, so "Youth Small" resolves the
+# same way "Youth S" does. Mirrors SIZE_WORDS in the JSX.
+_SIZE_WORDS = {"SMALL": "S", "MED": "M", "MEDIUM": "M", "LARGE": "L"}
 
 
 def _friendly_size(size):
-    up = (size or "").upper()
+    # Punctuation and repeated spaces collapse to ONE space so "Youth-XS" and
+    # "YOUTH  XS" are the same key; the space itself is kept because it is what
+    # separates the age word from the code.
+    up = re.sub(r"[^A-Z0-9]+", " ", str(size or "").upper()).strip()
     if up in _FRIENDLY_SIZE_MAP:
         return _FRIENDLY_SIZE_MAP[up]
+    flat = up.replace(" ", "")
+    if flat in _FRIENDLY_SIZE_MAP:
+        return _FRIENDLY_SIZE_MAP[flat]
+    # Spelled-out age group: "Youth XS" == "YXS", "Adult XL" == "AXL" == "XL".
+    # Only the age WORD is consumed - what follows must already be a known code,
+    # so "Adult Something" is returned untouched rather than guessed at.
+    if " " in up:
+        head, rest = up.split(" ", 1)
+        rest = rest.replace(" ", "")
+        rest = _SIZE_WORDS.get(rest, rest)
+        if head == "YOUTH" and ("Y" + rest) in _FRIENDLY_SIZE_MAP:
+            return _FRIENDLY_SIZE_MAP["Y" + rest]
+        if head == "ADULT" and rest in _FRIENDLY_SIZE_MAP:
+            return _FRIENDLY_SIZE_MAP[rest]
+        if head == "TODDLER":
+            if rest in _FRIENDLY_SIZE_MAP:
+                return _FRIENDLY_SIZE_MAP[rest]
+            # "Toddler 4" means 4T - a sheet that already said "Toddler" often
+            # drops the T.
+            if rest.isdigit() and (rest + "T") in _FRIENDLY_SIZE_MAP:
+                return _FRIENDLY_SIZE_MAP[rest + "T"]
     # Adult "A" prefix (AM = M): the same size, just marked to pair visually
     # with the youth "Y" codes. No entry above starts with "A", so stripping it
     # can never mis-read a real size name.
-    if len(up) > 1 and up[0] == "A" and up[1:] in _FRIENDLY_SIZE_MAP:
-        return _FRIENDLY_SIZE_MAP[up[1:]]
+    if len(flat) > 1 and flat[0] == "A" and flat[1:] in _FRIENDLY_SIZE_MAP:
+        return _FRIENDLY_SIZE_MAP[flat[1:]]
     return size
+
+
+def _size_aliases(size_label):
+    """Every spelling of ONE size a pattern file might use. Mirrors sizeAliases
+    in automate_production.jsx - the pre-flight must accept exactly what the
+    render accepts, or it refuses jobs that would have worked."""
+    out = [size_label]
+    up = str(size_label or "").upper()
+
+    def add(n):
+        if n not in out:
+            out.append(n)
+
+    if len(up) > 1 and up[0] == "Y" and up in _FRIENDLY_SIZE_MAP:
+        add("Youth " + str(size_label)[1:])
+    if re.match(r"^[0-9]+T$", up):
+        add("Toddler " + str(size_label))
+        add("Toddler " + str(size_label)[:-1])
+    shorts = [k for k, v in _FRIENDLY_SIZE_MAP.items()
+              if v == size_label and not k.startswith("Y") and not re.match(r"^[0-9]+T$", k)]
+    if shorts:
+        add("Adult " + str(size_label))
+        for sc in shorts:
+            if sc != up:
+                add(sc)
+                add("Adult " + sc)
+            add("A" + sc)
+    return out
 
 
 def _is_accessory(part):
@@ -823,15 +881,23 @@ def _expected_pattern_pieces(plan_data):
 
             # patternTargetName: accessories and the Universal group carry no
             # size prefix, everything else is "<Size> <Panel>".
-            def full(label, _p=part, _s=size_label):
-                return label if (_is_accessory(_p) or _s == "Universal") else f"{_s} {label}"
+            #
+            # One GROUP PER SIZE SPELLING, because the pattern may write the size
+            # as "YXS" or "Youth XS", "XL" or "Adult XL" - findPatternPanel in
+            # the JSX accepts any of them, so this must too. A pre-flight that is
+            # stricter than the renderer refuses jobs that would have worked,
+            # which is worse than no pre-flight at all.
+            def expand(labels, _p=part, _s=size_label):
+                if _is_accessory(_p) or _s == "Universal":
+                    return [list(labels)]
+                return [[f"{alias} {lb}" for lb in labels] for alias in _size_aliases(_s)]
 
             if part == "sleeve":
-                alternatives = [[full("Short Sleeve")], [full("Long Sleeve")], [full("Sleeve")]]
+                alternatives = expand(["Short Sleeve"]) + expand(["Long Sleeve"]) + expand(["Sleeve"])
             elif full_button and part.lower() == "front":
-                alternatives = [[full("Front")], [full("Front Left"), full("Front Right")]]
+                alternatives = expand(["Front"]) + expand(["Front Left", "Front Right"])
             else:
-                alternatives = [[full(_PART_LABEL_MAP.get(part, part))]]
+                alternatives = expand([_PART_LABEL_MAP.get(part, part)])
 
             key = tuple(tuple(alt) for alt in alternatives)
             if key in seen:
@@ -1170,7 +1236,12 @@ def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mock
         sm_warn_path = os.path.join(job_dir, "sleeve_match_warnings.json")
         bl_warn_path = os.path.join(job_dir, "back_label_warnings.json")
         parm_err_path = os.path.join(job_dir, "parm_errors.json")
-        for stale_path in (sm_warn_path, bl_warn_path, parm_err_path):
+        # error_log.txt lives in the RENDER dir, which a re-run reuses. Left
+        # behind, last run's crash would mark this run INCOMPLETE even if it
+        # finished perfectly - the same stale-state trap the three files above
+        # are cleared for.
+        stale_jsx_err = os.path.join(render_dir, "error_log.txt")
+        for stale_path in (sm_warn_path, bl_warn_path, parm_err_path, stale_jsx_err):
             try:
                 if os.path.exists(stale_path):
                     os.remove(stale_path)
@@ -1633,6 +1704,38 @@ def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mock
                 logger.warning(f"Could not read PARM errors: {e}")
         if parm_errors:
             logger.error(f"PARM error - {len(parm_errors)} panel(s) failed: {parm_errors}")
+
+        # THE JSX ABORTED. automate_production.jsx's top-level catch writes
+        # error_log.txt and stops - so this is not a warning about one panel, it
+        # is "the run ended here and everything after it was never built".
+        #
+        # NOTHING read this file until 2026-09-03. Job Knuckle_Headz_Mint_Order-2
+        # crashed part-way through XL, wrote S/M/L and never built XL, 2XL or
+        # Universal - and still reported "Production Ready! Ready for download."
+        # The only trace was a file no code opened.
+        #
+        # is_ready stays True on purpose: the sizes that DID finish are real and
+        # the designer should be able to take them. What changes is that the
+        # message leads with INCOMPLETE, so nobody ships it believing it is whole.
+        jsx_error = None
+        jsx_err_path = os.path.join(render_dir, "error_log.txt")
+        if os.path.exists(jsx_err_path):
+            try:
+                with open(jsx_err_path, "r") as f:
+                    jsx_error = " ".join(f.read().split())
+            except Exception as e:
+                jsx_error = f"(error_log.txt exists but could not be read: {e})"
+        if jsx_error:
+            logger.error(f"JSX ABORTED - the run did not finish: {jsx_error}")
+            update_status(
+                job_dir,
+                "INCOMPLETE - the render stopped early (" + jsx_error + "). "
+                "Any size after that point was NOT built - check which .ai files exist "
+                "before using this order.",
+                100, True, warnings=sm_warnings or None,
+                back_label_warnings=bl_warnings or None, parm_errors=parm_errors or None,
+            )
+            return f"{zip_base_name}.zip"
 
         if sm_warnings or bl_warnings or parm_errors:
             parts = []

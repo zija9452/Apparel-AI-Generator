@@ -660,6 +660,44 @@ def _enforce_hoodie_neck(plan_dict: Dict[str, Any], hoodie: bool) -> None:
             logger.info(f"HOODIE: removed 'neck' item from size '{group.get('size')}' (hoodies have no neckline).")
         group["items"] = kept
 
+def _enforce_neck(plan_dict: Dict[str, Any], hoodie: bool) -> None:
+    """One 'neck' panel per size, added in code rather than hoped for.
+
+    The LLM is supposed to emit neck for every size as part of its default part
+    list, and _enforce_hoodie_neck above exists precisely because it does. But
+    "supposed to" is not "does": on job Knuckle_Headz_Mint_Order (2026-09-03) it
+    emitted front, back and sleeve-short for all five sizes and no neck at all,
+    for an order that had rendered necks fine the day before. Nothing in the
+    pipeline noticed - the plan was valid, the render was clean, and the neck
+    simply was not in the box.
+
+    Every other part that must always be present is already enforced here rather
+    than trusted to the model: accessories by checkbox, Patti for full-button,
+    Rib & Cuff for hoodie. Neck was the one left out, and it is the same class of
+    thing. This closes that gap.
+
+    Runs AFTER _enforce_hoodie_neck so the two never fight: a hoodie has no
+    neckline, so nothing is added there.
+    """
+    if hoodie:
+        return
+    added = []
+    for group in plan_dict.get("production_groups", []):
+        size = group.get("size")
+        if not size or size == "Universal":
+            continue
+        items = group.setdefault("items", [])
+        if any(str(it.get("part_name", "")).lower() == "neck" for it in items):
+            continue
+        items.append({"part_name": "neck", "size": size, "quantity": 1, "text_replacements": []})
+        added.append(size)
+    if added:
+        logger.warning(
+            "NECK: the plan had no 'neck' item for size(s) %s - added one each. "
+            "The model omitted a part it is required to emit.", ", ".join(added)
+        )
+
+
 def _enforce_extra_logos(plan_dict: Dict[str, Any], raw_orders: List[Dict[str, Any]]) -> None:
     """Neck/Sleeve logos ('Neck Logo', 'Left/Right/Sleeve Logo' Excel columns).
     Unlike front/back, these parts are never itemized per Excel row (they
@@ -868,6 +906,7 @@ def job_options(
     front_back_stripes_match: bool = Form(False),
     hoodie: bool = Form(False),
     hoodie_center_design_match: bool = Form(False),
+    team_name_scale: bool = Form(False),
     design_scale_mode: str = Form("height"),
     export_mode: str = Form("ai_jpg"),
 ) -> Dict[str, Any]:
@@ -892,6 +931,7 @@ def job_options(
         "front_back_stripes_match": front_back_stripes_match,
         "hoodie": hoodie,
         "hoodie_center_design_match": hoodie_center_design_match,
+        "team_name_scale": team_name_scale,
         "design_scale_mode": design_scale_mode,
         "export_mode": export_mode,
     }
@@ -941,6 +981,9 @@ async def _build_plan(
     _enforce_personalization(plan_dict, excel_data.get("raw_orders", []))
     _dedupe_unpersonalized(plan_dict)
     _enforce_hoodie_neck(plan_dict, hoodie)
+    # Straight after the hoodie strip, and BEFORE _enforce_extra_logos: a
+    # 'Neck Logo' column has to find a neck item to attach itself to.
+    _enforce_neck(plan_dict, hoodie)
     _enforce_sleeve_length(plan_dict, excel_data.get("raw_orders", []), user_instructions, is_hoodie=hoodie)
     _enforce_extra_logos(plan_dict, excel_data.get("raw_orders", []))
 
@@ -986,6 +1029,14 @@ async def _build_plan(
     # Both keys are written and the JSX ORs them - the nested one stays ANDed
     # with full_button_jersey there (unchanged), this one is not gated at all.
     plan_dict["front_back_stripes_match"] = bool(opt["front_back_stripes_match"])
+    # TEAM-NAME SCALE, standalone and NOT gated on garment type - same rule as
+    # design_scale_mode below. A height-driven fit leaves the design narrower than
+    # the panel by a gap that grows with size, so mockup artwork tagged "team name"
+    # (in its layer NAME or its Attributes NOTE) shrinks steadily on the bigger
+    # sizes; this puts it back on the mockup's own width %. See
+    # scaleTeamNameToPanel in scripts/automate_production.jsx. Off = the JSX
+    # function never runs, so an untouched form reproduces the old output exactly.
+    plan_dict["team_name_scale"] = bool(opt["team_name_scale"])
     # OUTPUT: "ai_jpg" (default - render a JPEG per piece, what every job has
     # always done) or "ai_only" (save the order .ai and skip the render phase,
     # which on a heavy mockup is most of the run). Normalised here like

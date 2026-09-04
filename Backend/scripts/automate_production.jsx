@@ -408,6 +408,10 @@ function runAutomation() {
         //               graded panel. Opt-in, and the only extra thing it does -
         //               every other panel/part behaves exactly as on "height".
         var SIDE_ANCHOR = (plan.design_scale_mode === "height_sides");
+        // TEAM-NAME SCALE: a global opt-in, NOT nested under any garment type -
+        // full-button, hoodie and plain jerseys all read the same flag, same
+        // convention as design_scale_mode above. See scaleTeamNameToPanel.
+        var TEAM_NAME_SCALE = (plan.team_name_scale === true);
         // PATTERN OUTLINE STROKE: every pattern piece's own cut outline is pinned
         // to this width. Patterns arrive drawn at 1pt; the mockup's matching
         // 'base-path' is drawn at 3pt, and since the panel takes its FILL from
@@ -547,11 +551,36 @@ function runAutomation() {
         // first spot-swatch import into the new document - right after
         // startNextOrderDoc()'s orderDoc.close() - threw it. The identical code
         // path ran 13 times either side of that moment without a single failure.
-        var PARM_RETRIES = 3;       // extra attempts after the first failure
+        // RAISED FROM 3 -> 10 on 2026-09-04, on measured evidence rather than a
+        // guess. Job Knuckle_Headz_White_Order recovered 12 panels and lost 5,
+        // and the recoveries were spread 6 / 5 / 1 across attempts 2 / 3 / 4 -
+        // i.e. one panel needed the LAST attempt available, so the tail had not
+        // died out and 3 retries was cutting into it. The failures are also not
+        // deterministic: 2XL Neck threw at four DIFFERENT lines on its four
+        // attempts, and Medium Neck threw twice at one line and then rebuilt
+        // cleanly on the third. Nothing is being "fixed" here - the underlying
+        // fault is that the run degrades as it goes (Small/Medium/Large clean,
+        // XL/2XL/6XL failing) - this only buys more chances against a random
+        // failure. Expect it to save some of those panels, not all.
+        var PARM_RETRIES = 10;      // extra attempts after the first failure
         var PARM_SLEEP_MS = 3000;   // settle time between attempts
-        var PARM_BUDGET = 40;       // whole-job cap on retries, so a genuinely
-                                    // corrupt document cannot turn every item
-                                    // into a 9-second stall
+        // The DELETE can PARM too (see removeWithRetry), but it gets its OWN
+        // retry count rather than following PARM_RETRIES. Otherwise raising the
+        // panel retries to 10 silently turns every rollback into up to
+        // 11 x 0.8s x two stages = ~18s of waiting. Measured on the job above,
+        // the remove never needed a retry at all and the sweep needed 3 once, so
+        // 3 is already generous here.
+        var PARM_REMOVE_RETRIES = 3;
+        var PARM_REMOVE_SLEEP_MS = 800;
+        // Whole-job cap on rebuild attempts, so a genuinely corrupt document
+        // cannot turn every item into a 30-second stall with nothing to show.
+        // RAISED FROM 40 -> 200 alongside PARM_RETRIES above: at 10 retries each
+        // failing panel can eat 10 of this, and the old 40 was nearly spent (32
+        // used) at only 3 retries. Hitting the cap is worse than any single
+        // failure - past it NO panel gets a rollback at all, and the failures in
+        // this job all land at the END of the run, exactly where an exhausted
+        // budget would bite.
+        var PARM_BUDGET = 200;
         var PARM_MAX_ERRORS = 40; // report cap; the rest stay in debug_log.txt
         var parmBudgetUsed = 0;
         var parmErrors = [];      // end-of-job report -> parm_errors.json/.txt
@@ -893,16 +922,43 @@ function runAutomation() {
                 log("--- START PROCESSING PART: " + displayGroupName + " ---");
                 log("Job ID: " + (typeof jobId !== 'undefined' ? jobId : "N/A") + " | Part: " + item.part_name + " | Qty: " + quantity);
                 
-                var patternObj = findAnywhere(patternDoc, targetGroupName);
+                // SIZE SPELLING: the pattern may name this panel "YXS Front" or
+                // "Youth XS Front", "XL Back" or "Adult XL Back" - both are the
+                // same piece, written by whoever drew the file. findPatternPanel
+                // tries every accepted spelling instead of demanding the one the
+                // order happens to use.
+                //
+                // targetGroupName stays CANONICAL on purpose. It feeds the height
+                // cache, the instance names, the artboard names and the logs, and
+                // those must not change shape just because one pattern file spells
+                // a size the long way - only the lookup is flexible.
+                var patternFound = findPatternPanel(sizeLabel, partLabel, isAcc);
+                var patternObj = patternFound ? patternFound.obj : null;
                 if (!patternObj) {
-                    log("CRITICAL: Could not find '" + targetGroupName + "' in Master Pattern document. Skipping.");
+                    log("CRITICAL: Could not find '" + targetGroupName + "' in Master Pattern document (tried: " +
+                        sizeAliases(sizeLabel).join(", ") + "). Skipping.");
                 }
 
                 if (patternObj) {
-                    log("Found '" + targetGroupName + "' in Pattern.");
+                    log("Found '" + patternFound.name + "' in Pattern.");
                     var masterProcessed = null;
 
-                    for (var q = 0; q < quantity; q++) {
+                    // ONE PANEL PER PLAN ITEM, whatever the quantity says - per
+                    // explicit instruction. A quantity of 2 used to render two
+                    // identical artboards and two identical JPGs; the print file
+                    // is the same file either way, and how many garments come off
+                    // it is a production-floor decision, not a rendering one.
+                    //
+                    // The loop shape is kept rather than removed on purpose: its
+                    // body is ~700 lines and carries the PARM rollback, and the
+                    // note above it records that the body contains no `break` or
+                    // `continue` of its own. Bounding it is a one-token change;
+                    // unwrapping it is not.
+                    //
+                    // The plan quantity is still logged on the line above, so
+                    // nothing is lost - it just no longer multiplies artboards.
+                    if (quantity > 1) log("QTY: plan says " + quantity + " for this item - rendering ONE panel (quantity does not multiply print files).");
+                    for (var q = 0; q < 1; q++) {
                         // CANVAS FLOOR: does this instance still fit in the
                         // current .ai file? Measured from the PATTERN document's
                         // own panel (the order doc places it at that native
@@ -966,6 +1022,25 @@ function runAutomation() {
                         // from deleting the previous piece's design when this one
                         // fails before its own assignment is reached.
                         var pastedPattern = null, pastedDesign = null;
+                        // THE SAME RULE, and leaving these two off this line cost a
+                        // whole job (Knuckle_Headz_Mint_Order-2, 2026-09-03).
+                        //
+                        // Both are assigned `false` further down, INSIDE the try and
+                        // ~50 lines after the duplicate() that can throw PARM. When XL
+                        // Neck PARMed at the duplicate, that assignment never ran, so
+                        // `sleevePairStacked` still held the `true` left by the
+                        // previous item - the second half of a stacked short-sleeve
+                        // pair. The row-flow bookkeeping below then trusted it and read
+                        // `pmLastSleevePanel.topY`, which that same pair had just set to
+                        // null: "null is not an object", straight past the per-item
+                        // catch into the TOP-LEVEL one. The run was abandoned with S/M/L
+                        // written and XL, 2XL and Universal never built - and the job
+                        // still reported "Production Ready".
+                        //
+                        // ES3 has no block scope: one binding per function, so a `var`
+                        // inside the loop is the SAME variable every iteration and keeps
+                        // whatever the last iteration left in it.
+                        var sleevePairStacked = false, ribCuffAnchored = false;
                         try {
                             var preFlowX = currentX, preFlowY = currentY; // row-flow slot before any snap/stack override
                             artboardCount++;
@@ -1023,7 +1098,10 @@ function runAutomation() {
                             // waste. Only ever two consecutive short-sleeve instances
                             // pair up; anything else in between clears pmLastSleevePanel
                             // (see the row-flow bookkeeping below).
-                            var sleevePairStacked = false;
+                            // Already cleared at the top of the attempt (see the note
+                            // there) - this is a plain re-assignment, not a second
+                            // variable. ES3 gives the function ONE binding either way.
+                            sleevePairStacked = false;
                             if (isShortSleevePart && pmLastSleevePanel && pmLastSleevePanel.sizeLabel === sizeLabel) {
                                 currentX = pmLastSleevePanel.leftX;
                                 currentY = pmLastSleevePanel.bottomY - refContext.spacing;
@@ -1035,7 +1113,10 @@ function runAutomation() {
                             // (per explicit instruction, general to every job type)
                             // instead of the normal row-flow - does not consume a
                             // flow slot (see the row-flow bookkeeping below).
-                            var ribCuffAnchored = false;
+                            // Cleared at the top of the attempt with sleevePairStacked -
+                            // a stale `true` here would skip the row-flow advance and
+                            // stack the next piece on top of this one.
+                            ribCuffAnchored = false;
                             var ribCuffAnchor = (isRibCuffPart && ribCuffSleeveBySize[sizeLabel]) ? ribCuffSleeveBySize[sizeLabel] : null;
                             if (ribCuffAnchor) {
                                 // CENTRED on the Sleeve, not left-aligned: the Rib &
@@ -1181,9 +1262,8 @@ function runAutomation() {
                                             var designFill = getDesignBaseFill(pastedDesign);
                                             if (designFill) {
                                                 try {
-                                                    baseShape.fillColor = designFill.color;
-                                                    baseShape.filled = true;
-                                                    log("Panel base filled from design (" + designFill.src + ", " + designFill.color.typename + ").");
+                                                    var baseHow = fillShapeSolid(baseShape, designFill.color);
+                                                    log("Panel base filled from design (" + designFill.src + ", " + designFill.color.typename + ", " + baseHow + ").");
                                                     if (nPartName.indexOf("placket") !== -1 || nPartName.indexOf("patti") !== -1) {
                                                         var siblingCount = fillSiblingPlacementPaths(pastedPattern, baseShape, designFill.color);
                                                         if (siblingCount > 0) log("Also filled " + siblingCount + " sibling panel piece(s) with the same base color (Placket/Patti's two strips).");
@@ -1280,6 +1360,15 @@ function runAutomation() {
                                                         // to wherever the rotation puts it.
                                                         anchorShoulderBandsToPanel(pastedDesign, designBasePath, baseShape, item.part_name, sizeLabel);
                                                     }
+
+                                                    // TEAM-NAME SCALE (opt-in): same window again - it needs the
+                                                    // scaled base-path, so before removeBasePaths. NOT inside the
+                                                    // front/back gate above: it acts on whatever carries the tag,
+                                                    // wherever that is, and is a no-op on a design without one.
+                                                    // Must also run BEFORE the clip and the placket join below, so
+                                                    // a full-button front is already at its final size when the two
+                                                    // halves are matched to each other.
+                                                    if (TEAM_NAME_SCALE) scaleTeamNameToPanel(pastedDesign, designBasePath, baseShape, item.part_name, sizeLabel);
 
                                                     // NEW: Only remove items explicitly named "base-path"
                                                     log("Checking for 'base-path' in " + item.part_name + " for removal...");
@@ -1473,13 +1562,26 @@ function runAutomation() {
                                                     clipGroup.name = "design_clip_group"; clipGroup.move(baseShape, ElementPlacement.PLACEBEFORE);
                                                     clipMask.move(clipGroup, ElementPlacement.PLACEATBEGINNING); pastedDesign.move(clipGroup, ElementPlacement.PLACEATEND);
                                                     if (clipGroup.pageItems.length >= 2) {
-                                                        clipGroup.clipped = true;
-                                                        log("Success: Clipping mask active.");
+                                                        var clipHow = applyClipMask(clipGroup, clipMask);
+                                                        log("Success: Clipping mask active (" + clipHow + ").");
                                                     }
                                                 // PARM goes up to the panel rollback - see the note on the Merge Error catch.
                                                 } catch (eClip) {
+                                                    // The mask is a FILLED duplicate of the panel outline sitting ON
+                                                    // TOP of the design, so a half-built clip does not merely leave the
+                                                    // design untrimmed - it hides the artwork completely. That is what
+                                                    // shipped on YM/YL Front before applyClipMask existed. Clear
+                                                    // whichever copy survived before reporting.
+                                                    try {
+                                                        if (clipGroup && !clipGroup.clipped && clipGroup.pageItems.length >= 2) {
+                                                            var stray = clipGroup.pageItems[0];
+                                                            if (stray.typename === "PathItem" || stray.typename === "CompoundPathItem") stray.remove();
+                                                        }
+                                                    } catch (eStray) {}
+                                                    try { if (clipMask && clipMask.parent) clipMask.remove(); } catch (eMask) {}
                                                     parmBail(eClip, "the clipping mask setup");
-                                                    log("Clipping setup failed: " + eClip.message);
+                                                    log("Clipping setup failed: " + eClip.message +
+                                                        " - removed the leftover mask copy, so the design stays VISIBLE but is NOT trimmed to the panel outline.");
                                                 }
                                             }
 
@@ -1653,10 +1755,9 @@ function runAutomation() {
                                                         // Assigned while accProbe is still alive on purpose: a
                                                         // gradient fill stays valid only while something in the
                                                         // document still references it.
-                                                        baseShape.fillColor = accFill.color;
-                                                        baseShape.filled = true;
+                                                        var accHow = fillShapeSolid(baseShape, accFill.color);
                                                         accColor = accFill.color;
-                                                        log("Accessory base filled from mockup (" + accFill.src + ", " + accFill.color.typename + ").");
+                                                        log("Accessory base filled from mockup (" + accFill.src + ", " + accFill.color.typename + ", " + accHow + ").");
                                                     } else {
                                                         log("Accessory WARNING: mockup group '" + item.part_name + "' has no filled path to take a color from.");
                                                     }
@@ -1776,7 +1877,14 @@ function runAutomation() {
                             // Anchored below its Sleeve - never touched currentX/
                             // currentY, so there's nothing to advance or restore;
                             // it consumed no row-flow space at all.
-                        } else if (sleevePairStacked) {
+                        // `&& pmLastSleevePanel` is belt-and-braces on top of the reset
+                        // at the top of the attempt: the two are set together and
+                        // cleared together, so a true flag with a null panel means
+                        // something upstream went wrong. Falling through to the normal
+                        // row advance below is a slightly wrong LAYOUT; dereferencing
+                        // the null threw out of the per-item catch and abandoned the
+                        // rest of the job. The first is recoverable, the second is not.
+                        } else if (sleevePairStacked && pmLastSleevePanel) {
                             // Paired sleeve consumed no new column - restore the row-flow
                             // slot to what it was before this pair started, but make sure
                             // the row's height accounts for the full stacked pair (not
@@ -1935,8 +2043,16 @@ function runAutomation() {
                 parmTxtFile.writeln("PARM ERRORS - " + parmErrors.length + " PANEL(S) FAILED. CHECK THESE MANUALLY.");
                 parmTxtFile.writeln("");
                 parmTxtFile.writeln("Illustrator raised error 1346458189 ('PARM') while building the panels below.");
-                parmTxtFile.writeln("Each panel was deleted and rebuilt from scratch " + PARM_RETRIES + " times, " +
-                                    (PARM_SLEEP_MS / 1000) + " seconds apart, and still failed.");
+                // Says what the run is ALLOWED to do, never what it did - the
+                // per-panel lines below carry the real count and the two used to
+                // contradict each other ("rebuilt 3 times" in this sentence over
+                // "rebuilt 0 time(s)" underneath). Raising PARM_RETRIES to 10
+                // would have widened that gap, so the claim is dropped here.
+                parmTxtFile.writeln("Each panel below was deleted and rebuilt from scratch up to " + PARM_RETRIES +
+                                    " times, " + (PARM_SLEEP_MS / 1000) + " seconds apart. How many rebuilds each " +
+                                    "one actually got is on its own line - a panel that could not be removed from " +
+                                    "the canvas is not rebuilt at all, on purpose, because a second copy would be " +
+                                    "stacked on the first.");
                 parmTxtFile.writeln("");
                 parmTxtFile.writeln("These panels are NOT complete - colours, clipping, placement or matching may");
                 parmTxtFile.writeln("be missing. Open each one in the .ai file and finish it by hand before printing.");
@@ -2090,25 +2206,164 @@ function runAutomation() {
         return snap;
     }
 
+    // A PARM can strike the REMOVE itself, and giving up on the first throw is
+    // exactly what shipped two half-built panels in job Knuckle_Headz_Mint_Order
+    // (2026-09-03): both ended "ROLLBACK FAILED ... not rebuilding" without ever
+    // using their retries, while the same job's rebuild recovered 10 other panels.
+    // So the delete gets the same treatment the panel body gets - retried, not
+    // abandoned. Also clears the two states Illustrator flatly refuses to delete
+    // from (locked / hidden) before every attempt; a leftover lock from a failed
+    // attempt makes remove() throw forever no matter how long we wait.
+    // NOTE: deliberately no "is this item still alive?" probe between attempts -
+    // reading properties off suspect artwork to decide what to do next is the
+    // mistake that made job FAZ103 reject every design four times and ship panels
+    // with no artwork at all. A remove() on an already-dead reference just throws
+    // and costs one retry; the item-count check below is what decides the verdict.
+    // PANEL BASE FILL - paint a panel outline, whatever shape it is.
+    //
+    // A CompoundPathItem accepts `.fillColor` without complaining AND reads the
+    // value back as if it stuck (`filled` returns true, `fillColor` returns the
+    // colour) - but nothing is painted. Rendered, it comes out empty. Verified
+    // 2026-09-04 by exporting a JPEG of all three cases: assigning on the
+    // compound renders WHITE in either assignment order, assigning on the member
+    // paths renders the colour. So the read-back is a false positive and the
+    // "Panel base filled from design" log line has been lying for compound
+    // panels.
+    //
+    // That is why YM Front / YL Front came out with no base colour while every
+    // other size was fine - those two pattern pieces carry their outline as a
+    // CompoundPathItem (same root cause as the clipping-mask failure above).
+    // The defect predates applyClipMask; a working clip only stopped the
+    // untrimmed design from covering the bare panel.
+    function fillShapeSolid(shape, color) {
+        if (shape.typename === "CompoundPathItem") {
+            var n = 0;
+            for (var i = 0; i < shape.pathItems.length; i++) {
+                try { shape.pathItems[i].filled = true; shape.pathItems[i].fillColor = color; n++; } catch (eP) {}
+            }
+            return "compound path, filled " + n + " of " + shape.pathItems.length + " member path(s)";
+        }
+        shape.fillColor = color;
+        shape.filled = true;
+        return "plain path";
+    }
+
+    // CLIPPING MASK - turn clipGroup into a clip, whatever shape the pattern
+    // handed us for the panel outline.
+    //
+    // Illustrator's DOM refuses "group.clipped = true" unless the group's TOP
+    // item is a PathItem; a CompoundPathItem throws "The top item in the group
+    // must be a path item to create a mask". Not hypothetical: in the
+    // Knuckle_Headz youth pattern, YM Front and YL Front carry their outline as
+    // a CompoundPathItem holding ONE subpath (a plain outline someone pressed
+    // Ctrl+8 on) while every other size carries a plain PathItem - so exactly
+    // those two panels failed to clip, on every run, in both jobs.
+    //
+    //   PathItem             -> clipped = true       (unchanged; almost every panel)
+    //   CompoundPath, 1 sub  -> lift the subpath out, then clipped = true
+    //   CompoundPath, n subs -> executeMenuCommand("makeMask"), the only route
+    //                           that keeps the HOLES. Unwrapping a real compound
+    //                           would silently drop them and clip to the outer
+    //                           subpath alone, which looks fine and is wrong.
+    //
+    // Verified in the scratchpad (2026-09-04) against the real pattern's eight
+    // front panels and against a synthetic holed compound, inside production's
+    // own nested clipGroup arrangement - clipGroup/pastedPattern/pastedDesign
+    // all survive the makeMask selection round-trip.
+    function applyClipMask(clipGroup, clipMask) {
+        if (clipMask.typename !== "CompoundPathItem") {
+            clipGroup.clipped = true;
+            return "plain path";
+        }
+        var subs = 0;
+        try { subs = clipMask.pathItems.length; } catch (eS) {}
+        if (subs === 1) {
+            var lifted = clipMask.pathItems[0];
+            lifted.move(clipMask, ElementPlacement.PLACEBEFORE);
+            try { clipMask.remove(); } catch (eR) {}
+            lifted.move(clipGroup, ElementPlacement.PLACEATBEGINNING);
+            clipGroup.clipped = true;
+            return "compound path, 1 subpath - unwrapped to a plain path";
+        }
+        // Menu commands act on the selection, so save and restore whatever was
+        // selected; leaving a stray selection behind affects later menu calls.
+        var prevSel = [];
+        try { prevSel = app.selection; } catch (ePS) {}
+        try {
+            app.selection = null;
+            clipGroup.selected = true;
+            app.executeMenuCommand("makeMask");
+            app.selection = null;
+        } finally {
+            try {
+                app.selection = null;
+                for (var s = 0; s < prevSel.length; s++) { try { prevSel[s].selected = true; } catch (eSel) {} }
+            } catch (eRS) {}
+        }
+        // makeMask reports nothing, so confirm rather than assume.
+        if (!clipGroup.clipped) throw new Error("makeMask ran but the group is still unclipped");
+        return "compound path, " + subs + " subpaths - masked via makeMask, holes kept";
+    }
+
+    function removeWithRetry(item, label) {
+        var attempts = 1 + PARM_REMOVE_RETRIES;
+        var a;
+        for (a = 1; a <= attempts; a++) {
+            try {
+                try { item.locked = false; } catch (eL) {}
+                try { item.hidden = false; } catch (eH) {}
+                item.remove();
+                if (a > 1) log("PARM ROLLBACK: " + label + " removed on attempt " + a + " of " + attempts + ".");
+                return true;
+            } catch (eR) {
+                log("PARM ROLLBACK: could not remove " + label + " (attempt " + a + " of " + attempts + ") -> " + eR.message);
+                if (a < attempts) $.sleep(PARM_REMOVE_SLEEP_MS);
+            }
+        }
+        return false;
+    }
+
     // Returns false when the artwork could NOT be removed. The caller must then
     // stop retrying: replaying the body on top of a copy that is still on the
     // canvas would ship a double-pasted panel, and nothing downstream would ever
     // flag that - strictly worse than the error being recovered from.
     function rollbackInstance(snap, piece, design) {
         var cleared = true;
-        try { if (piece) piece.remove(); } catch (eP) { cleared = false; }
+        var guard = 0;
+        var sweepTry = 0;
+        var sweepAttempts = 1 + PARM_REMOVE_RETRIES;
+        if (piece) removeWithRetry(piece, "the panel artwork");
+        // design normally lives INSIDE piece and died with it - the .parent read
+        // is the cheap way to skip a reference that is already gone, so this one
+        // stays a single attempt and the sweep below catches it if it survives.
         try { if (design && design.parent) design.remove(); } catch (eD) {}
         // Anything the failed attempt left at the top of the document (a partial
         // duplicate, a temp group) sits ABOVE the baseline count. New items go in
         // at the beginning, so index 0 is the newest.
-        try {
-            var guard = 0;
-            while (orderDoc.pageItems.length > snap.topLen && guard < 50) {
-                orderDoc.pageItems[0].remove();
-                guard++;
+        // The VERDICT is this count, not whether remove() threw: a piece whose own
+        // remove() failed is still a top-level item, so the sweep deletes it here
+        // and the panel is genuinely clean again. Only a count that stays above
+        // baseline means a copy is really still on the canvas.
+        for (sweepTry = 1; sweepTry <= sweepAttempts; sweepTry++) {
+            cleared = true;
+            try {
+                guard = 0;
+                while (orderDoc.pageItems.length > snap.topLen && guard < 50) {
+                    var topItem = orderDoc.pageItems[0];
+                    try { topItem.locked = false; } catch (eTL) {}
+                    try { topItem.hidden = false; } catch (eTH) {}
+                    topItem.remove();
+                    guard++;
+                }
+                if (orderDoc.pageItems.length > snap.topLen) cleared = false;
+            } catch (eO) { cleared = false; }
+            if (cleared) break;
+            if (sweepTry < sweepAttempts) {
+                log("PARM ROLLBACK: leftover artwork still on the canvas after sweep " + sweepTry +
+                    " of " + sweepAttempts + " - retrying in " + (PARM_REMOVE_SLEEP_MS / 1000) + "s.");
+                $.sleep(PARM_REMOVE_SLEEP_MS);
             }
-            if (orderDoc.pageItems.length > snap.topLen) cleared = false;
-        } catch (eO) { cleared = false; }
+        }
         try {
             while (orderDoc.artboards.length > snap.abLen) {
                 orderDoc.artboards[orderDoc.artboards.length - 1].remove();
@@ -3575,7 +3830,12 @@ function runAutomation() {
             if (!patternSizeCache) patternSizeCache = {};
             var nm = patternTargetName(item, sizeLabel);
             if (patternSizeCache[nm]) return;
-            var obj = findAnywhere(patternDoc, nm);
+            // Alias-aware, same as the main lookup - otherwise a pattern that
+            // spells sizes the long way ("Youth XS Front") would cache nothing,
+            // every height estimate would read 0, and the whole-size rollover
+            // check would silently never fire.
+            var found = findPatternPanel(sizeLabel, resolvePartLabel(item, sizeLabel), isAccessory(item.part_name));
+            var obj = found ? found.obj : null;
             if (!obj) return;
             var b = obj.visibleBounds;
             patternSizeCache[nm] = { w: Math.abs(b[2] - b[0]) + 10, h: Math.abs(b[1] - b[3]) + 10 };
@@ -3855,7 +4115,12 @@ function runAutomation() {
                 var ew = eSize.w, eh = eSize.h;
                 if (eh > tallest) tallest = eh;
                 measured++;
-                for (var eq = 0; eq < (eItem.quantity || 1); eq++) {
+                // ONE per item, matching the render loop above. These two must
+                // count the same thing: this estimate decides when a whole size
+                // is moved to a fresh .ai file, so counting quantity here while
+                // the renderer draws one panel would reserve room for pieces
+                // that never get placed and split files early for no reason.
+                for (var eq = 0; eq < 1; eq++) {
                     x += ew + refContext.spacing;
                     if (eh > rowH) rowH = eh;
                     if (x > 7500) { x = -7500; dropped += rowH + refContext.vSpacing; rowH = 0; }
@@ -4371,7 +4636,7 @@ function runAutomation() {
                     var area = 0;
                     try { area = Math.abs(it.width * it.height); } catch (eA2) {}
                     if (area >= exArea * 0.3) {
-                        try { it.fillColor = color; it.filled = true; filled++; } catch (eF) {}
+                        try { fillShapeSolid(it, color); filled++; } catch (eF) {}
                     }
                 } else if (it.typename === "GroupItem") {
                     walk(it.pageItems);
@@ -4747,6 +5012,154 @@ function runAutomation() {
         try { s = (item.note || "").toLowerCase().replace(/[^a-z0-9]/g, ""); } catch (eT) {}
         if (re.test(s)) return s;
         return null;
+    }
+
+    // TEAM-NAME SCALE (opt-in, plan.team_name_scale). Third user of the designer
+    // tags above, and the only one that RESIZES rather than moves.
+    //
+    // THE PROBLEM. A height-driven fit preserves the design's aspect ratio, so on
+    // a graded panel the artwork ends up narrower than the panel - and the gap
+    // grows with size, because patterns grade wider faster than they grade taller.
+    // Measured on this job's own pattern, the team name slid from 64.7% of a Small
+    // front down to 49.4% of a 6XL front, which is exactly why it reads right on
+    // the small sizes and "too small" on the big ones:
+    //     Small 64.7%  Medium 60.8%  Large 57.6%  XL 55.9%  2XL 52.5%  6XL 49.4%
+    //
+    // THE FIX. Put the tagged artwork back on the width % it had in the mockup:
+    //     P = teamW / silhouetteW        (the mockup ratio)
+    //     target = P x panelW
+    //     k = target / teamW_now   ->    k = panelW / silhouetteW_now
+    // The team name's own width CANCELS, so the correction is just the width gap
+    // the height fit left behind - the same gap SIDE-ANCHOR closes by translating.
+    // Nothing about the mockup has to be re-opened or remembered: the whole design
+    // was scaled uniformly, so the ratio is still the mockup's own.
+    //
+    // MEASURED GEOMETRICALLY, and that is load-bearing. resize(..., lineScale =
+    // 100, ...) never scales a stroke, so a VISIBLE width is (geometric x scale +
+    // a constant overhang) and the visible ratio is NOT invariant under the fit.
+    // This job's team name carries 37.67pt of overhang, enough to land a
+    // visible/visible version ~1pp low on 6XL. Geometric bounds scale exactly, so
+    // the formula above is exact - verified on all 7 sizes of this pattern:
+    // 65.72% on every one, 0.00pp error. It is also what pmFitBounds already does
+    // for the fit itself (see its note), so the correction and the fit agree.
+    //
+    // Uniform - width and height together - so lettering never distorts. The TOP
+    // EDGE IS PINNED, so the name grows downward and never creeps up toward the
+    // neck, and it is centred horizontally on the panel. No cap: the % is
+    // whatever the mockup had, anything past the panel
+    // edge is trimmed by design_clip_group like any other artwork, and a warning
+    // names the overflow in mm so it is visible in debug_log.txt.
+    function scaleTeamNameToPanel(design, designBase, panelPath, partName, sizeLabel) {
+        var TEAM_TAG = /^teamname[0-9]*$/;   // "Team name", "teamname", "TEAM_NAME", "team name 2"
+        var tag = "TEAM-NAME [" + sizeLabel + " " + partName + "]";
+        try {
+            var mm = 2.83465;
+            function r1(n) { return Math.round(n * 10) / 10; }
+            function gW(it) { var b = it.geometricBounds; return Math.abs(b[2] - b[0]); }
+            function gCX(it) { var b = it.geometricBounds; return (b[0] + b[2]) / 2; }
+
+            // Collect the tagged artwork. A matched GROUP is taken whole and NOT
+            // descended into - otherwise a group tagged "team name" and a child
+            // tagged the same way would both be resized and the child would end
+            // up scaled twice.
+            var found = [];
+            function collect(container) {
+                var kids = null;
+                try { kids = container.pageItems; } catch (eK) { return; }
+                for (var i = 0; i < kids.length; i++) {
+                    var it = kids[i];
+                    if (_tagOf(it, TEAM_TAG)) { found.push(it); continue; }
+                    var tn = "";
+                    try { tn = it.typename; } catch (eT) { continue; }
+                    if (tn === "GroupItem") collect(it);
+                }
+            }
+            collect(design);
+            if (!found.length) { log(tag + ": no artwork named or noted 'team name' in this design - nothing to scale."); return; }
+
+            var baseW = gW(designBase);
+            if (baseW <= 0) { log(tag + ": the design's base-path has no width - left as is."); return; }
+
+            // The reference width is the panel this design was fitted to - EXCEPT
+            // on a full-button half, where the design pasted in is the whole front
+            // but baseShape is only one half of it. Scaling to the half would
+            // shrink the name to about 50%. Both halves must also land on ONE k,
+            // or the two halves of the name would not line up across the placket.
+            var panelW = gW(panelPath);
+            var widthSource = "this panel";
+            if (isFrontLeft(partName) || isFrontRight(partName)) {
+                var fullW = teamNameFullFrontWidth(sizeLabel);
+                if (fullW) {
+                    panelW = fullW;
+                    widthSource = "the FULL front (both halves)";
+                } else {
+                    log(tag + ": WARNING - full-button half, but the full front's width was never cached; " +
+                        "scaling against this half alone would halve the name, so it is left as is.");
+                    return;
+                }
+            }
+            if (panelW <= 0) { log(tag + ": the panel has no width - left as is."); return; }
+
+            var k = (panelW / baseW) * 100;
+            if (Math.abs(k - 100) < 0.05) { log(tag + ": design already fills the panel width - nothing to do."); return; }
+
+            var panelCX = gCX(panelPath);
+            for (var f = 0; f < found.length; f++) {
+                var it2 = found[f];
+                var label = "";
+                try { label = it2.name || it2.typename; } catch (eL) { label = "?"; }
+                try {
+                    var wasPct = (gW(it2) / panelW) * 100;
+                    // TOP IS PINNED - the name grows DOWNWARD, never upward. A
+                    // centre-anchored resize would push its top edge up toward the
+                    // shoulder/neck by half the growth, which on 6XL (k = 133%) is
+                    // most of an inch. Captured and restored through .top on both
+                    // sides, so the same box defines "top" going in and coming out
+                    // and the painted top edge lands exactly where it started -
+                    // more predictable here than trusting Transformation.TOP to
+                    // pick the box we mean.
+                    var topBefore = it2.top;
+                    it2.resize(k, k, true, true, true, true, 100, Transformation.CENTER);
+                    it2.top = topBefore;
+                    // Relative nudge, so this is a pure translation whichever bounds
+                    // convention .left follows - see the note on pageItem.left.
+                    it2.left += (panelCX - gCX(it2));
+                    var nowPct = (gW(it2) / panelW) * 100;
+                    log(tag + ": '" + label + "' resized " + r1(k) + "% (" + r1(wasPct) + "% -> " +
+                        r1(nowPct) + "% of " + widthSource + "'s width) and centred.");
+                    // Painted width, stroke included - that is what can overrun the cut line.
+                    var vb = it2.visibleBounds, visW = Math.abs(vb[2] - vb[0]);
+                    if (visW > panelW) {
+                        log(tag + ": WARNING - '" + label + "' is now " + r1((visW - panelW) / mm) +
+                            "mm wider than the panel. That is the mockup's own proportion, so it is kept; " +
+                            "the clip will trim it. Check this panel if the name must stay whole.");
+                    }
+                } catch (eR) {
+                    log(tag + ": could not resize '" + label + "' - " + eR.message);
+                }
+            }
+        } catch (e) {
+            parmBail(e, "the TEAM-NAME SCALE step");
+            log(tag + ": error - " + e.message);
+        }
+    }
+
+    // The full front panel's width for a size, for the full-button case above.
+    // Comes from patternSizeCache, which was filled BEFORE the order document
+    // existed (see prebuildPatternSizes for the 792pt reason that matters) and
+    // stores width + 10pt of outline-stroke allowance, so the 10 comes back off.
+    // Falls back to the two halves added together, then gives up rather than
+    // guessing - a wrong reference here silently halves the name.
+    function teamNameFullFrontWidth(sizeLabel) {
+        try {
+            if (!patternSizeCache) return 0;
+            var whole = patternSizeCache[patternTargetName({ part_name: "front" }, sizeLabel)];
+            if (whole && whole.w > 10) return whole.w - 10;
+            var l = patternSizeCache[patternTargetName({ part_name: "front-left" }, sizeLabel)];
+            var r = patternSizeCache[patternTargetName({ part_name: "front-right" }, sizeLabel)];
+            if (l && r && l.w > 10 && r.w > 10) return (l.w - 10) + (r.w - 10);
+        } catch (e) {}
+        return 0;
     }
 
     // SIDE-ANCHOR (front/back only, opt-in via design_scale_mode =
@@ -10159,25 +10572,154 @@ function runAutomation() {
     function isFrontLeft(p) { var n = (p || "").toLowerCase(); return n === "front-left" || n === "front_left"; }
     function isFrontRight(p) { var n = (p || "").toLowerCase(); return n === "front-right" || n === "front_right"; }
     function isBack(p) { var n = (p || "").toLowerCase(); return n === "back"; }
-    function getFriendlySize(s) {
-        // Youth codes (YXS/YS/YM/YL/YXL) map to themselves - unlike adult
-        // codes, the pattern file's own panel names already use the short
-        // code directly (e.g. "YXS Front"), not a spelled-out word.
-        var m = {
-            "XS": "XS", "S": "Small", "M": "Medium", "L": "Large", "XL": "XL", "XXL": "2XL", "2XL": "2XL", "3XL": "3XL", "XXXL": "3XL", "4XL": "4XL", "XXXXL": "4XL",
-            "YXS": "YXS", "YS": "YS", "YM": "YM", "YL": "YL", "YXL": "YXL"
+    // Every size code this job understands -> the ONE label the rest of the
+    // script uses. Youth (YXS..YXL) and toddler (1T..10T) map to themselves:
+    // unlike the adult sizes, the pattern file's own panel names already use
+    // the short code directly ("YXS Front", "2T Front"), not a spelled-out word.
+    // HUNG OFF THE FUNCTION, NOT A `var` IN THIS SCOPE - the same reason
+    // exportFolderFor.cache is, and it is not a style choice.
+    //
+    // getFriendlySize is called from the very top of the run (prebuildPatternSizes
+    // and the main item loop), which is HUNDREDS of lines above where these
+    // definitions physically sit. A function declaration is hoisted and callable
+    // from anywhere; a `var` is hoisted as `undefined` and only takes its value
+    // when execution actually reaches that line. So a plain `var SIZE_CODES = {...}`
+    // here reads `undefined` on every early call - which is exactly what happened
+    // on job Knuckle_Headz_Mint_Order (2026-09-03): "undefined is not an object",
+    // pre-measure skipped, then the run abandoned before a single panel was built.
+    // The map used to live INSIDE getFriendlySize, which is why it never had this
+    // problem until it was lifted out to be shared with sizeAliases.
+    function sizeCodes() {
+        if (!sizeCodes.map) sizeCodes.map = {
+            "XS": "XS", "S": "Small", "M": "Medium", "L": "Large", "XL": "XL",
+            "XXL": "2XL", "2XL": "2XL", "3XL": "3XL", "XXXL": "3XL", "4XL": "4XL", "XXXXL": "4XL",
+            "YXS": "YXS", "YS": "YS", "YM": "YM", "YL": "YL", "YXL": "YXL",
+            "1T": "1T", "2T": "2T", "3T": "3T", "4T": "4T", "5T": "5T",
+            "6T": "6T", "7T": "7T", "8T": "8T", "9T": "9T", "10T": "10T"
         };
-        var up = (s || "").toUpperCase();
-        if (m[up]) return m[up];
+        return sizeCodes.map;
+    }
+    // Spelled-out words that mean a bare size code, so "Youth Small" resolves
+    // the same way "Youth S" does. Same hoisting rule as above.
+    function sizeWords() {
+        if (!sizeWords.map) sizeWords.map = { "SMALL": "S", "MED": "M", "MEDIUM": "M", "LARGE": "L" };
+        return sizeWords.map;
+    }
+
+    function getFriendlySize(s) {
+        // Punctuation and repeated spaces collapse to ONE space, so "Youth-XS",
+        // "YOUTH  XS" and "Youth Xs" are the same key. Spaces are kept (not
+        // dropped the way findAnywhere does) because the space is exactly what
+        // separates the age word from the code below.
+        var up = String(s == null ? "" : s).toUpperCase().replace(/[^A-Z0-9]+/g, " ");
+        up = up.replace(/^ +/, "").replace(/ +$/, "");
+        var CODES = sizeCodes();
+        if (CODES[up]) return CODES[up];
+
+        var flat = up.replace(/ /g, "");
+        if (CODES[flat]) return CODES[flat];
+
+        // SPELLED-OUT AGE GROUP. "Youth XS" is the same garment as "YXS", and
+        // "Adult XL" the same as "AXL"/"XL" - both spellings turn up because the
+        // Excel and the pattern are written by different people. Only the age
+        // WORD is consumed; what follows still has to be a code already in the
+        // table, so "Adult Something" is returned untouched rather than guessed
+        // at and silently pointed to the wrong panel.
+        var sp = up.indexOf(" ");
+        if (sp > 0) {
+            var head = up.substring(0, sp), rest = up.substring(sp + 1).replace(/ /g, "");
+            var WORDS = sizeWords();
+            if (WORDS[rest]) rest = WORDS[rest];
+            if (head === "YOUTH" && CODES["Y" + rest]) return CODES["Y" + rest];
+            if (head === "ADULT" && CODES[rest]) return CODES[rest];
+            if (head === "TODDLER") {
+                if (CODES[rest]) return CODES[rest];
+                // "Toddler 4" means 4T - the T is what the code carries, and a
+                // sheet that already said "Toddler" often drops it.
+                if (/^[0-9]+$/.test(rest) && CODES[rest + "T"]) return CODES[rest + "T"];
+            }
+        }
+
         // ADULT "A" PREFIX: some Excel sheets explicitly mark adult sizes
         // with a leading "A" (AXS/AS/AM/AL/AXL/A2XL/...) to visually pair
         // with the youth "Y" prefix above - it's the SAME size as the
         // un-prefixed code (AM = M), never a distinct size of its own.
         // Strip it and re-look up ONLY when what's left is a known code -
-        // no entry above starts with "A", so this never mis-strips a real
-        // size name.
-        if (up.length > 1 && up.charAt(0) === "A" && m[up.substring(1)]) return m[up.substring(1)];
+        // no entry in SIZE_CODES starts with "A", so this never mis-strips a
+        // real size name.
+        if (flat.length > 1 && flat.charAt(0) === "A" && CODES[flat.substring(1)]) return CODES[flat.substring(1)];
         return s;
+    }
+
+    // Every spelling of ONE size that a pattern file might legitimately use for
+    // its panels, most likely first. The Excel and the pattern are drawn by
+    // different people: one writes "YXS Front", the other "Youth XS Front", and
+    // both are correct. findPatternPanel tries these in order rather than
+    // demanding the single canonical spelling and failing the job.
+    //
+    // Order matters only for speed - the names are mutually exclusive, so
+    // whichever exists is the right one.
+    function sizeAliases(sizeLabel) {
+        var out = [sizeLabel];
+        var up = String(sizeLabel || "").toUpperCase();
+        function add(n) { for (var i = 0; i < out.length; i++) if (out[i] === n) return; out.push(n); }
+
+        // Youth: "YXS" <-> "Youth XS"
+        var CODES = sizeCodes();
+        if (up.length > 1 && up.charAt(0) === "Y" && CODES[up]) {
+            add("Youth " + sizeLabel.substring(1));
+        }
+        // Toddler: "2T" <-> "Toddler 2T" / "Toddler 2"
+        if (/^[0-9]+T$/.test(up)) {
+            add("Toddler " + sizeLabel);
+            add("Toddler " + sizeLabel.substring(0, sizeLabel.length - 1));
+        }
+        // Adult: "XL" <-> "Adult XL" <-> "AXL", and the spelled-out words the
+        // adult sizes canonically use ("Small" <-> "S" <-> "Adult Small").
+        // EVERY short code that means this size, not just the first one found:
+        // 2XL is written "XXL" as often as "2XL", and 3XL as "XXXL", so taking
+        // one and stopping left "A2XL Front" and "XXXL Front" unmatched.
+        var shorts = [];
+        for (var k in CODES) {
+            if (!CODES.hasOwnProperty(k)) continue;
+            if (CODES[k] !== sizeLabel) continue;
+            if (k.charAt(0) === "Y" || /^[0-9]+T$/.test(k)) continue; // youth/toddler handled above
+            shorts.push(k);
+        }
+        if (shorts.length) {
+            add("Adult " + sizeLabel);
+            for (var si = 0; si < shorts.length; si++) {
+                var sc = shorts[si];
+                if (sc !== up) { add(sc); add("Adult " + sc); }
+                // The "A" prefix is only ever used with the SHORT code
+                // (AS/AM/AXL), never with the spelled-out word - "ASMALL" is not
+                // a name anyone writes, and generating it costs a pointless lookup.
+                add("A" + sc);
+            }
+        }
+        return out;
+    }
+
+    // Finds a size+part panel in the pattern document, accepting any spelling
+    // of the size (see sizeAliases). Returns { obj, name } - `name` is the
+    // spelling that actually matched, so everything downstream (logs, the
+    // height cache, SLEEVE-MATCH scoping) keeps using the real panel's name
+    // rather than the one we guessed first.
+    function findPatternPanel(sizeLabel, partLabel, isAcc) {
+        if (isAcc || sizeLabel === "Universal") {
+            var accObj = findAnywhere(patternDoc, partLabel);
+            return accObj ? { obj: accObj, name: partLabel } : null;
+        }
+        var alts = sizeAliases(sizeLabel);
+        for (var i = 0; i < alts.length; i++) {
+            var nm = alts[i] + " " + partLabel;
+            var found = findAnywhere(patternDoc, nm);
+            if (found) {
+                if (i > 0) log("SIZE NAME: pattern calls this piece '" + nm + "' (the order says '" + sizeLabel + "') - matched by alias.");
+                return { obj: found, name: nm };
+            }
+        }
+        return null;
     }
 
     // ============================================================
@@ -10261,7 +10803,7 @@ function runAutomation() {
             var wrapper = orderDoc.groupItems.add(); pastedDesign.moveToBeginning(wrapper); pastedDesign = wrapper;
         }
         var designFill = getDesignBaseFill(pastedDesign);
-        if (designFill) { try { baseShape.fillColor = designFill.color; baseShape.filled = true; } catch (eBF) {} }
+        if (designFill) { try { fillShapeSolid(baseShape, designFill.color); } catch (eBF) {} }
 
         // TEST-PRINT SIZE TAGS: same cleanup the main per-item loop does (search
         // "remove'-named items" above). Hood/Border came in through this
