@@ -325,17 +325,19 @@ function runAutomation() {
         // requires the mockup to have a "LOCAL TAG" group with a "SIZE" text
         // frame inside it before the job is even allowed to start.
         var LOCAL_TAG_ON = (plan.local_tag_enabled === true);
-        // NECK CONTRAST: gated by the frontend checkbox (plan.neck_contrast,
-        // default OFF). Was unconditional for every neck/collar/rib part - it
-        // forced every text frame (and every path named label/size/logo) inside
-        // that piece to pure white or pure black, judged against the panel's own
-        // fill. That is right for a plain neck strip whose only artwork is brand
-        // text, and wrong for a neck the designer actually coloured, because
-        // smartContrast is called WITHOUT skipDesignGroup here and so walks into
-        // 'design_clip_group' and flattens the pasted mockup artwork too.
-        // Unchecked, the neck now renders exactly as the mockup and pattern drew
-        // it - the same "normal" path every other part already takes.
-        var NECK_CONTRAST_ON = (plan.neck_contrast === true);
+        // MOCKUP NECK COLOR: takes the colour the designer drew in the mockup's
+        // neck and puts it on the matching word of the pattern's neck piece.
+        // Default OFF - a job that does not check it never touches a neck's text
+        // colour. See applyMockupNeckTextColors.
+        //
+        // This replaced NECK CONTRAST (removed 2026-09-04). That one ignored both
+        // files and forced every neck text frame - and every path named
+        // label/size/logo - to pure white or pure black against the panel's fill.
+        // It was called WITHOUT skipDesignGroup, so it also walked into
+        // 'design_clip_group' and flattened the pasted mockup artwork. Taking the
+        // real colour from the mockup is what was actually wanted.
+        // (smartContrast itself stays - the hoodie hood still uses it.)
+        var MOCKUP_NECK_COLOR_ON = (plan.mockup_neck_color === true);
         // HOODIE: gated by the frontend checkbox (plan.hoodie, default OFF -
         // zero effect on normal jobs). Independent of full_button_jersey.
         // When ON, adds Outside Hood/Inside Hood/Border/Pocket on top of the
@@ -1794,20 +1796,28 @@ function runAutomation() {
                             // colour). Removed - no stroke is stripped anywhere now,
                             // per explicit instruction, and this piece's outline goes
                             // through applyPatternOutlineStroke like every other one.
-                            // Gated by the frontend checkbox - a job that doesn't
-                            // check it never recolors a neck, even though the
-                            // panel fill it would judge against is right here.
-                            if (isNeck && baseShape) {
-                                if (NECK_CONTRAST_ON) smartContrast(pastedPattern, baseShape.fillColor);
-                                else log("NECK CONTRAST skipped (checkbox off): neck text and labels keep the colors the mockup and pattern drew.");
-                            }
-                            // Pattern-side brand text (e.g. neck "BIG KID") copied
-                            // from the pattern doc can carry a broken appearance
-                            // that Illustrator silently refuses to render at export
-                            // (its duplicates stay invisible too; a fresh frame with
-                            // identical font/size renders fine). Rebuild each frame
-                            // AFTER smartContrast so the final fill is carried over.
-                            if (isNeck) rebuildTextFrames(pastedPattern);
+                            // rebuildTextFrames used to run here for every neck. It
+                            // was added 2026-07-14 (PHR 038) because one pattern's
+                            // brand text ("BIG KID", BrassStencilJNL) carried a
+                            // corrupt object-level appearance that Illustrator
+                            // refused to render - even a duplicate stayed invisible,
+                            // and only a fresh frame came out.
+                            //
+                            // Removed per explicit instruction: the rebuild copies
+                            // only font/size/scale/tracking/leading/justification/
+                            // kerning/fill and THROWS THE APPEARANCE AWAY. On this
+                            // pattern the neck text ("ALOHA", "STRICTLY") carries
+                            // NO character-level fill at all - its colour lives in
+                            // the appearance - so the rebuilt frame came out in the
+                            // wrong colour and read as a different font. The pattern
+                            // piece is duplicated, so leaving it alone reproduces
+                            // exactly what the designer drew.
+                            //
+                            // rebuildTextFrames() itself is kept, unused, in case a
+                            // pattern with that corrupt-appearance defect turns up
+                            // again - the symptom is neck text that is present in
+                            // the .ai but missing from the export.
+                            if (MOCKUP_NECK_COLOR_ON && isNeck) applyMockupNeckTextColors(pastedPattern, sourceDesign, sizeLabel);
                             bringPatternLabelsToFront(pastedPattern, orderDoc, baseShape);
                             if (parmTry > 1) log("PARM RECOVERED: " + instanceName + " rebuilt cleanly on attempt " + parmTry + " of " + parmAttempts + ".");
                             break;   // piece complete - leave the rollback loop
@@ -2219,6 +2229,91 @@ function runAutomation() {
     // mistake that made job FAZ103 reject every design four times and ship panels
     // with no artwork at all. A remove() on an already-dead reference just throws
     // and costs one retry; the item-count check below is what decides the verdict.
+    // MOCKUP NECK COLOR - gated by the frontend checkbox (plan.mockup_neck_color,
+    // default OFF). Takes the colour of the NECK TEXT from the mockup's own neck
+    // design and puts it on the matching text in the pattern's neck piece.
+    //
+    // Matched WORD BY WORD on the text contents, per explicit instruction: the
+    // mockup's "ALOHA" colours the pattern's "ALOHA", and a word with no partner
+    // in the mockup is left exactly as the pattern drew it. No positional or
+    // font-based guessing - a wrong guess here silently recolours brand text.
+    //
+    // Reads the EFFECTIVE colour, not `characterAttributes.fillColor`: on this
+    // mockup two of the three neck frames report NoColor at character level
+    // because their colour lives in the appearance. Reading the property
+    // directly would copy "no colour" onto perfectly good text.
+    function neckTextColors(tf) {
+        var out = { fill: null, stroke: null, weight: null };
+        var ca = null;
+        try { ca = tf.textRange.characters[0].characterAttributes; } catch (eCA) {}
+        if (ca) {
+            try { if (ca.fillColor && ca.fillColor.typename !== "NoColor") out.fill = ca.fillColor; } catch (eF) {}
+            try { if (ca.strokeColor && ca.strokeColor.typename !== "NoColor") out.stroke = ca.strokeColor; } catch (eS) {}
+            try { out.weight = ca.strokeWeight; } catch (eW) {}
+        }
+        // frame level next - a stroke is often set on the frame, not the run
+        if (!out.fill) { try { if (tf.filled && tf.fillColor && tf.fillColor.typename !== "NoColor") out.fill = tf.fillColor; } catch (eFF) {} }
+        if (!out.stroke) { try { if (tf.stroked && tf.strokeColor && tf.strokeColor.typename !== "NoColor") out.stroke = tf.strokeColor; } catch (eFS) {} }
+        // then the enclosing groups - appearance-applied colour usually sits here
+        var p = null; try { p = tf.parent; } catch (eP) {}
+        while ((!out.fill || !out.stroke) && p && p.typename === "GroupItem") {
+            if (!out.fill) { try { if (p.fillColor && p.fillColor.typename !== "NoColor") out.fill = p.fillColor; } catch (ePF) {} }
+            if (!out.stroke) { try { if (p.strokeColor && p.strokeColor.typename !== "NoColor") out.stroke = p.strokeColor; } catch (ePS) {} }
+            try { p = p.parent; } catch (ePP) { break; }
+        }
+        return out;
+    }
+
+    function applyMockupNeckTextColors(patternPiece, mockupNeckSource, sizeLabel) {
+        if (!patternPiece || !mockupNeckSource) {
+            log("MOCKUP NECK COLOR [" + sizeLabel + "]: no mockup neck design to read colours from - neck keeps the pattern's own colours.");
+            return;
+        }
+        function collectText(c, into) {
+            try { if (c.textFrames) for (var i = 0; i < c.textFrames.length; i++) into.push(c.textFrames[i]); } catch (eT) {}
+            try { if (c.groupItems) for (var g = 0; g < c.groupItems.length; g++) collectText(c.groupItems[g], into); } catch (eG) {}
+            return into;
+        }
+        var srcFrames = collectText(mockupNeckSource, []);
+        if (!srcFrames.length) {
+            log("MOCKUP NECK COLOR [" + sizeLabel + "]: the mockup's neck has no text - nothing to copy.");
+            return;
+        }
+        // index the mockup's words by their exact contents
+        var byWord = {};
+        for (var s = 0; s < srcFrames.length; s++) {
+            var sc = ""; try { sc = String(srcFrames[s].contents); } catch (eSC) { continue; }
+            var key = sc.replace(/^\s+|\s+$/g, "");
+            if (key && !byWord[key]) byWord[key] = neckTextColors(srcFrames[s]);
+        }
+        var dstFrames = collectText(patternPiece, []);
+        var done = 0, missed = [];
+        for (var d = 0; d < dstFrames.length; d++) {
+            var tf = dstFrames[d];
+            var dc = ""; try { dc = String(tf.contents); } catch (eDC) { continue; }
+            var dkey = dc.replace(/^\s+|\s+$/g, "");
+            var col = byWord[dkey];
+            if (!col) { if (dkey) missed.push("\"" + dkey + "\""); continue; }
+            try {
+                var ca = tf.textRange.characterAttributes;
+                if (col.fill) ca.fillColor = col.fill;
+                if (col.stroke) { ca.strokeColor = col.stroke; if (col.weight) ca.strokeWeight = col.weight; }
+                // per-character too: a run can carry its own colour that the
+                // range-level write does not reach.
+                for (var ch = 0; ch < tf.textRange.characters.length; ch++) {
+                    var cca = tf.textRange.characters[ch].characterAttributes;
+                    if (col.fill) { try { cca.fillColor = col.fill; } catch (eCF) {} }
+                    if (col.stroke) { try { cca.strokeColor = col.stroke; } catch (eCS) {} }
+                }
+                done++;
+            } catch (eApply) {
+                log("MOCKUP NECK COLOR [" + sizeLabel + "]: could not recolour \"" + dkey + "\" -> " + eApply.message);
+            }
+        }
+        log("MOCKUP NECK COLOR [" + sizeLabel + "]: matched " + done + " of " + dstFrames.length +
+            " neck word(s) to the mockup" + (missed.length ? "; no mockup partner for " + missed.join(", ") + " - left as the pattern drew them" : "") + ".");
+    }
+
     // PANEL BASE FILL - paint a panel outline, whatever shape it is.
     //
     // A CompoundPathItem accepts `.fillColor` without complaining AND reads the

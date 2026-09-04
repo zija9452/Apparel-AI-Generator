@@ -912,18 +912,19 @@ export default function UploadForm({
           </Toggle>
 
           <Toggle
-            name="neck_contrast"
-            title="Neck contrast text"
+            name="mockup_neck_color"
+            title="Get mockup neck color"
             requires={
               <>
-                Nothing extra in the files. It judges the neck panel&apos;s own fill, so the neck
-                design group needs its <Name>base-path</Name> like every other part.
+                A group named <Name>Neck</Name> in the mockup, with the same wording as the
+                pattern&apos;s neck piece. Matching is word by word on the text itself.
               </>
             }
           >
-            Forces the text and any <Name>label</Name> / <Name>size</Name> / <Name>logo</Name> shape
-            on the Neck, Collar and Rib pieces to pure white or pure black, whichever reads against
-            that panel&apos;s color. Leave unchecked to keep every color the mockup and pattern drew.
+            Colors the Neck, Collar and Rib text with the color the mockup&apos;s own neck uses
+            &mdash; fill and stroke, taken from the appearance so text with no plain color still
+            reads correctly. A word with no match in the mockup is left exactly as the pattern drew
+            it. This is the opposite of <Name>Neck contrast text</Name>: use one or the other.
           </Toggle>
 
           <Toggle

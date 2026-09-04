@@ -901,7 +901,7 @@ def job_options(
     include_tukdi: bool = Form(False),
     preserve_sleeve_rib_distance: bool = Form(False),
     local_tag_enabled: bool = Form(False),
-    neck_contrast: bool = Form(False),
+    mockup_neck_color: bool = Form(False),
     front_back_side_match: bool = Form(False),
     front_back_stripes_match: bool = Form(False),
     hoodie: bool = Form(False),
@@ -926,7 +926,7 @@ def job_options(
         "include_tukdi": include_tukdi,
         "preserve_sleeve_rib_distance": preserve_sleeve_rib_distance,
         "local_tag_enabled": local_tag_enabled,
-        "neck_contrast": neck_contrast,
+        "mockup_neck_color": mockup_neck_color,
         "front_back_side_match": front_back_side_match,
         "front_back_stripes_match": front_back_stripes_match,
         "hoodie": hoodie,
@@ -1020,9 +1020,13 @@ async def _build_plan(
     plan_dict["full_button_front_back_match"] = bool(opt["full_button_front_back_match"])
     plan_dict["full_button_pattern_match"] = bool(opt["full_button_pattern_match"])
     plan_dict["preserve_sleeve_rib_distance"] = bool(opt["preserve_sleeve_rib_distance"])
-    # LOCAL TAG and NECK CONTRAST: standalone, every job type, gated in the JSX.
+    # LOCAL TAG and MOCKUP NECK COLOR: standalone, every job type, gated in the JSX.
     plan_dict["local_tag_enabled"] = bool(opt["local_tag_enabled"])
-    plan_dict["neck_contrast"] = bool(opt["neck_contrast"])
+    # MOCKUP NECK COLOR replaced the old neck_contrast flag (removed 2026-09-04):
+    # instead of forcing the neck text to white/black, take the colour the
+    # mockup's own neck uses and put it on the matching word of the pattern's
+    # neck.
+    plan_dict["mockup_neck_color"] = bool(opt["mockup_neck_color"])
     plan_dict["front_back_side_match"] = bool(opt["front_back_side_match"])
     # FRONT/BACK STRIPES MATCH, standalone: the same logic the nested
     # full_button_front_back_match checkbox above drives, but for ANY garment.
