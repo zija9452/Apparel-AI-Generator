@@ -78,8 +78,39 @@ function runAutomation() {
         updateStatus("Automation started", 40, false);
         log("Automation started");
         
+        // NAME INDEX: BUILD EACH DOCUMENT'S INDEX WHILE THAT DOCUMENT IS STILL
+        // THE ACTIVE ONE. This is the single biggest cost in the whole job, and
+        // it is entirely positional - the same code, moved, costs 4 minutes or
+        // 20 milliseconds.
+        //
+        // Illustrator answers a DOM read on the ACTIVE document in ~0.02ms and
+        // the IDENTICAL read on any other open document in ~125ms. Measured on
+        // this job's own files (60 reads of .name each): pattern active 1ms,
+        // pattern non-active 7645ms, switch back and it is 1ms again. Roughly
+        // 6000x, and it is per property read - so a walk that reads .name and
+        // .typename on ~1000 items is either instant or it is four minutes.
+        //
+        // The index used to be built wherever the first findAnywhere() happened
+        // to land. For the pattern that was prebuildPatternSizes() below, by
+        // which point the app.open() on the next line had already made the
+        // MOCKUP active, so every one of the pattern's 1048 reads paid the
+        // cross-document price. Straight from a real debug_log.txt:
+        //     Name index built (31 named items, 257444ms)   <- 4m17s, 31 names
+        //     Name index built (13 named items,  23406ms)   <- mockup, same cause
+        // That is 281s of the 343s that elapsed before the first JPEG was even
+        // exported - to collect 44 names. The actual layout inside that window
+        // took 58s.
+        //
+        // Warming it here reads no coordinates and creates no document, so
+        // docs/792PT_COORDINATE_SHIFT.md does not apply. Neither document is
+        // modified between opening it and its old first lookup either, so the
+        // table built here is identical to the one that used to be built later -
+        // only the clock changes.
+        warmNameIndex(patternDoc, "pattern");
+
         var mockupDoc = app.open(new File(mockupPath));
         log("Mockup opened");
+        warmNameIndex(mockupDoc, "mockup");
 
         // LOGO LIBRARY (optional): a separate .ai file where each logo is its
         // own named Layer/Group. Matched by name (via findAnywhere, same
@@ -91,6 +122,10 @@ function runAutomation() {
             try {
                 logoLibraryDoc = app.open(new File(logoLibraryPath));
                 log("Logo library opened: " + logoLibraryPath);
+                // Same reason as the pattern and mockup above - app.open just
+                // made this the active document, and it is the only moment the
+                // library can be indexed cheaply.
+                warmNameIndex(logoLibraryDoc, "logo library");
             } catch (eLogoLib) {
                 log("WARNING: Could not open logo library file: " + eLogoLib.message);
                 logoLibraryDoc = null;
@@ -4517,9 +4552,33 @@ function runAutomation() {
             idx = _buildNameIndex(container);
             _nameIndexes.push({ c: container, x: idx });
             var count = 0; for (var k in idx) count++;
-            log("Name index built (" + count + " named items, " + (new Date().getTime() - t0) + "ms) - lookups are now instant.");
+            var buildMs = new Date().getTime() - t0;
+            log("Name index built (" + count + " named items, " + buildMs + "ms) - lookups are now instant.");
+            // A warmed index takes ~20ms. Anything in seconds means this walk ran
+            // against a document that was NOT active, at ~125ms per property read
+            // (see the note above the warmNameIndex call in the main flow). Left
+            // as a warning rather than a fix, because the cure is to index the
+            // document earlier, not to switch the active document mid-layout.
+            if (buildMs > 2000) {
+                log("WARNING: that index was built against a NON-ACTIVE document, which is ~6000x slower per read. Warm it with warmNameIndex() at the point the document is opened.");
+            }
         }
         return idx[sName] || null;
+    }
+
+    /** Build a document's name index NOW, while the caller knows it is active.
+     *
+     *  The lookup is a deliberate miss - the table is the point, not the answer.
+     *  Failure is not fatal: findAnywhere() still builds the index on first use,
+     *  just at the old cross-document price. */
+    function warmNameIndex(doc, label) {
+        if (!doc) return;
+        try {
+            findAnywhere(doc, "__warm_name_index__");
+            log("NAME INDEX: " + label + " indexed while it was the active document.");
+        } catch (eWarm) {
+            log("NAME INDEX: could not pre-build the " + label + " index (" + eWarm.message + ") - it will be built on first use instead.");
+        }
     }
 
     // Two-axis INDEPENDENT stretch (design_scale_mode "both"): width and height

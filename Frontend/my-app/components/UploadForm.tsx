@@ -913,7 +913,7 @@ export default function UploadForm({
 
           <Toggle
             name="mockup_neck_color"
-            title="Get mockup neck color"
+            title="Get mockup neck Text color"
             requires={
               <>
                 A group named <Name>Neck</Name> in the mockup, with the same wording as the

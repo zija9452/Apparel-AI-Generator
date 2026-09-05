@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Alert, Icon, Name, btn, cn } from "./ui";
-import { fetchAgentHealth, getAgentToken, setAgentToken, type AgentHealth } from "@/lib/api";
+import { fetchAgentHealth, setAgentToken, type AgentHealth } from "@/lib/api";
 
 /** Is the designer's machine ready to render?
  *
@@ -47,6 +47,13 @@ export default function AgentStatus({
       url.searchParams.delete("agent_token");
       window.history.replaceState({}, "", url.toString());
     }
+    // set-state-in-effect: check() starts with setChecking(true), which is the
+    // synchronous setState the rule objects to. Kept deliberately - asking an
+    // external system (the agent on :8765) for its state on mount is what an
+    // effect is for, and there is no render-time answer to use instead. The
+    // cascading render the rule warns about does not happen either: `checking`
+    // already starts true, so React bails out on the identical value.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void check();
   }, [check]);
 
@@ -63,8 +70,24 @@ export default function AgentStatus({
     if (h?.paired) setTokenInput("");
   };
 
+  /* ------------------------------------------- still waiting for an answer */
+  // Must come first. Every branch below tests a field of `health`, and on the
+  // very first render health is null - so without this the component fell
+  // straight through to the green "Agent ready" strip and announced a healthy
+  // agent it had not spoken to yet (the giveaway was a bare "v" where the
+  // version belongs). It stays up on a re-check too, so "Check again" visibly
+  // does something instead of leaving the previous verdict on screen.
+  if (checking) {
+    return (
+      <div className="flex items-center gap-2 rounded-xl border border-line bg-surface-2 px-4 py-2.5 text-xs text-muted">
+        <span className="h-2 w-2 animate-pulse rounded-full bg-faint" />
+        Checking the agent on this PC…
+      </div>
+    );
+  }
+
   /* ------------------------------------------------ agent is not answering */
-  if (!checking && !health) {
+  if (!health) {
     return (
       <Alert
         tone="warn"
