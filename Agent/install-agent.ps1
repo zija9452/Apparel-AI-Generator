@@ -24,6 +24,10 @@
 param(
     [switch]$Uninstall,
     [switch]$ShowToken,
+    # Where this PC asks for the current render logic. See Set-CloudApi below.
+    # On a machine that runs the backend itself, install with
+    #   -CloudApi "http://localhost:8000"
+    [string]$CloudApi = "https://apparel-cloud-api-sclqd4y36a-el.a.run.app",
     # For scripted installs. By hand, the window must stay open long enough to
     # read - see Wait-BeforeClosing.
     [switch]$NoPause
@@ -234,6 +238,30 @@ $PythonW = Join-Path $VenvDir "Scripts\pythonw.exe"
 if (-not (Test-Path $PythonW)) {
     throw "Python environment not found at $PythonW"
 }
+
+# ---------------------------------------------------------------------------
+# WHERE THIS PC LOOKS FOR NEW RENDER LOGIC.
+#
+# main.py reads AGENT_CLOUD_API and falls back to http://localhost:8000. That
+# default is correct in the repo and wrong on every designer's PC: nothing
+# listens on 8000 there, so _sync_automation() gives up with "Could not check
+# ... (WinError 10061) - carrying on with the local copy" and the agent renders
+# with whatever JSX shipped inside its download, forever. The failure is
+# deliberately non-fatal, which is exactly why nobody noticed - job
+# Strictly_Molokai_Brown_Jersey_Order_Youth-3 died on a SIZE_CODES hoisting bug
+# that had been fixed and deployed days earlier.
+#
+# Written per-user (HKCU), so no administrator rights and nothing outside the
+# profile - the same promise the rest of this installer makes. The scheduled
+# task picks it up because it launches in this user's session.
+# ---------------------------------------------------------------------------
+$CloudApi = $CloudApi.TrimEnd('/')
+[Environment]::SetEnvironmentVariable("AGENT_CLOUD_API", $CloudApi, "User")
+# The task is started further down by THIS process, whose environment block was
+# built before the line above ran. Set it here too or the agent started by this
+# very install would still be pointing at the old address.
+$env:AGENT_CLOUD_API = $CloudApi
+Write-Host "Render logic comes from $CloudApi" -ForegroundColor DarkGray
 
 $action = New-ScheduledTaskAction -Execute $PythonW -Argument "`"$AgentScript`"" -WorkingDirectory $AgentDir
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME

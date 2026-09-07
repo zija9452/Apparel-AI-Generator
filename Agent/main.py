@@ -92,7 +92,7 @@ logger = logging.getLogger("apparel-agent")
 # left running. install-agent.ps1 compares this against the version answering
 # on 8765 after it starts, which is the only way it can tell "the new agent is
 # up" from "the OLD agent is still holding the port and answered for it".
-AGENT_VERSION = "0.4.0"
+AGENT_VERSION = "0.5.0"
 
 # Where every job lives on this PC. Renders and the zip are left here on
 # purpose - the designer owns this folder and decides when to clear it.
@@ -318,7 +318,17 @@ def _sync_automation() -> Optional[str]:
         with urllib.request.urlopen(f"{CLOUD_API}/automation/manifest", timeout=15) as r:
             manifest = json.loads(r.read().decode())
     except Exception as e:
-        logger.warning(f"Could not check for a newer automation bundle ({e}) - using the local copy")
+        # NAME THE URL. The default below is http://localhost:8000, which is
+        # right in the repo and wrong on a designer's PC - nothing listens on
+        # 8000 there. The old message said only "WinError 10061", which reads
+        # like a network hiccup rather than "this agent has never once been
+        # able to update itself", so it was ignored for weeks while jobs ran on
+        # a JSX whose bug was already fixed upstream.
+        logger.warning(
+            f"Could not check {CLOUD_API}/automation/manifest for newer render logic "
+            f"({e}) - CARRYING ON WITH THE LOCAL COPY, which may be out of date. "
+            f"Set AGENT_CLOUD_API if that address is wrong for this PC."
+        )
         return None
 
     updated = []
@@ -659,6 +669,10 @@ if __name__ == "__main__":
     print(f"  Listening on   http://{AGENT_HOST}:{AGENT_PORT}")
     print(f"  Orders go to   {PRODUCTION_DIR}")
     print(f"  Illustrator    {'found' if _illustrator_prog_ids() else 'NOT FOUND on this PC'}")
+    # Under pythonw this banner IS agent.log, so printing the address makes a
+    # mis-set AGENT_CLOUD_API visible in the one file people actually send when
+    # they ask for help - rather than only in a warning buried mid-job.
+    print(f"  Render logic   {CLOUD_API}")
     print("-" * 68)
     # The token goes on screen only when there IS a screen. Under pythonw this
     # output is a log file, and a log is the one thing people cheerfully email
