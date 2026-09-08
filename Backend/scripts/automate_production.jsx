@@ -10009,31 +10009,33 @@ function runAutomation() {
     // the outcome is "overwrite this text"; it is not safe when the outcome is
     // "delete this text", because a design that happens to read "#1 TEAM" or
     // "NAME" would be destroyed and nothing would say so.
-    // `subTargets` match as substrings; `exactTargets` must equal the whole
-    // name. The split exists because the useful placeholder names come in two
-    // shapes and only one of them is safe to match loosely:
-    //   "PLAYER NUMBER" as a substring is unambiguous.
-    //   "NAME" as a substring also matches "TEAM NAME", which is real artwork.
-    // So bare NAME / NUM / # are accepted only as an exact name.
-    function _phMatch(name, subTargets, exactTargets) {
-        for (var s = 0; s < subTargets.length; s++) {
-            if (name.indexOf(subTargets[s]) !== -1) return true;
-        }
-        for (var e = 0; e < exactTargets.length; e++) {
-            if (name === exactTargets[e]) return true;
+    // Same matching rule the guarded replacement uses, and for the same
+    // reasons: substrings, because a mockup may call the layer "PlayerName" or
+    // "Back Name" and all of those are the placeholder; minus the blocked
+    // words, because "TEAM NAME" is not.
+    //
+    // Deletion makes getting this wrong worse than a bad replacement does, so
+    // the two must not drift apart: whatever the replacement would have
+    // overwritten is exactly what this removes.
+    function _phMatch(name, targets) {
+        if (_placeholderBlocked(name)) return false;
+        for (var s = 0; s < targets.length; s++) {
+            if (name.indexOf(targets[s]) !== -1) return true;
         }
         return false;
     }
 
-    function removePlaceholders(container, subTargets, exactTargets, inheritedMatch) {
+    function removePlaceholders(container, targets, inheritedMatch) {
         if (!container) return 0;
         var removed = 0;
-        var here = inheritedMatch ||
-                   _phMatch((container.name || "").toUpperCase(), subTargets, exactTargets);
+        var cName = (container.name || "").toUpperCase();
+        // A blocked group stops an inherited match too - see replaceInContainer.
+        var here = _placeholderBlocked(cName) ? false
+                 : (inheritedMatch || _phMatch(cName, targets));
         if (container.textFrames) {
             for (var k = container.textFrames.length - 1; k >= 0; k--) {
                 var tf = container.textFrames[k];
-                var hit = here || _phMatch((tf.name || "").toUpperCase(), subTargets, exactTargets);
+                var hit = here || _phMatch((tf.name || "").toUpperCase(), targets);
                 if (!hit) continue;
                 try {
                     var was = "";
@@ -10048,7 +10050,7 @@ function runAutomation() {
         }
         if (container.groupItems) {
             for (var g = container.groupItems.length - 1; g >= 0; g--) {
-                removed += removePlaceholders(container.groupItems[g], subTargets, exactTargets, here);
+                removed += removePlaceholders(container.groupItems[g], targets, here);
             }
         }
         return removed;
@@ -10070,45 +10072,42 @@ function runAutomation() {
             if (!rep.layer_name) continue;
 
             var lName = rep.layer_name.toUpperCase();
-            // Split on the same rule the sweep uses: a target long enough to be
-            // unambiguous may match as a substring; the short ones must match a
-            // whole name. See the exactOnly note on replaceInContainer for what
-            // the loose match was quietly destroying.
-            var subTargets = [], exactTargets = [lName];
+            // Long, unambiguous targets may also match a frame's CONTENTS.
+            // Short ones go through the guard - see replaceInContainer.
+            var openTargets = [], guardedTargets = [lName];
 
             if (lName.indexOf("NAME") !== -1) {
                 suppliedName = true;
-                subTargets.push("PLAYER NAME", "NAME_LAYER");
-                exactTargets.push("NAME");
+                openTargets.push("PLAYER NAME", "NAME_LAYER");
+                guardedTargets.push("NAME");
             } else if (lName.indexOf("NUMBER") !== -1 || lName === "NUM" || lName === "#") {
                 suppliedNumber = true;
-                subTargets.push("PLAYER NUMBER", "NUMBER");
-                exactTargets.push("NUM", "#");
+                openTargets.push("PLAYER NUMBER", "NUMBER");
+                guardedTargets.push("NUM", "#");
             } else {
                 // Any other layer the designer named (SPONSOR, a custom tag).
-                // Keep the historical substring behaviour: nothing generic
-                // enough to collide is involved.
-                subTargets.push(lName);
+                // Long enough to carry its own meaning, so matched openly.
+                openTargets.push(lName);
+                guardedTargets = [];
             }
 
-            for (var t = 0; t < subTargets.length; t++) {
-                replaceInContainer(container, subTargets[t], rep.new_value, false, container, false);
+            for (var t = 0; t < openTargets.length; t++) {
+                replaceInContainer(container, openTargets[t], rep.new_value, false, container, false);
             }
-            // An exact target already covered by a substring target would find
-            // the same frame a second time and re-run the whole swap on it.
-            // Harmless but not free, and it is why a single number used to log
-            // "Number fit" three times: targets NUMBER, NUMBER and NUM all
-            // matched one group called "NUMBER".
-            for (var x = 0; x < exactTargets.length; x++) {
+            // A guarded target already covered by an open one would find the
+            // same frame again and re-run the whole swap on it. Harmless but not
+            // free, and it is why one number used to log "Number fit" three
+            // times: NUMBER, NUMBER and NUM all matched a single group.
+            for (var x = 0; x < guardedTargets.length; x++) {
                 var already = false;
-                for (var y = 0; y < subTargets.length; y++) {
-                    if (exactTargets[x].indexOf(subTargets[y]) !== -1) { already = true; break; }
+                for (var y = 0; y < openTargets.length; y++) {
+                    if (guardedTargets[x].indexOf(openTargets[y]) !== -1) { already = true; break; }
                 }
                 for (var z = 0; z < x; z++) {
-                    if (exactTargets[z] === exactTargets[x]) { already = true; break; }
+                    if (guardedTargets[z] === guardedTargets[x]) { already = true; break; }
                 }
                 if (already) continue;
-                replaceInContainer(container, exactTargets[x], rep.new_value, false, container, true);
+                replaceInContainer(container, guardedTargets[x], rep.new_value, false, container, true);
             }
         }
 
@@ -10121,10 +10120,10 @@ function runAutomation() {
         // was never supplied at all - the replacement above has, by then,
         // already handled every layer the order did supply.
         if (!suppliedName) {
-            removePlaceholders(container, ["PLAYER NAME", "NAME_LAYER"], ["NAME"], false);
+            removePlaceholders(container, ["PLAYER NAME", "NAME_LAYER", "NAME"], false);
         }
         if (!suppliedNumber) {
-            removePlaceholders(container, ["PLAYER NUMBER", "NUMBER"], ["NUM", "#"], false);
+            removePlaceholders(container, ["PLAYER NUMBER", "NUMBER", "NUM", "#"], false);
         }
     }
 
@@ -10626,22 +10625,39 @@ function runAutomation() {
         }
     }
 
-    // exactOnly - the target must EQUAL the frame's or an enclosing group's
-    //   name, and the frame's CONTENTS are not consulted at all.
+    // Names that look like a personalisation placeholder but are real artwork.
+    // "TEAM NAME" contains "NAME" - and this script has a whole TEAM-NAME
+    // feature for it, so it is certainly not a player-name placeholder.
+    function _placeholderBlocked(name) {
+        return name.indexOf("TEAM") !== -1;
+    }
+
+    // guarded - for the SHORT, ambiguous target names ("NAME", "NUM", "#").
+    //   Names still match as substrings, because mockups spell the layer every
+    //   which way ("PlayerName", "Back Name"), but:
+    //     * a name carrying a blocked word is never touched, and
+    //     * the frame's CONTENTS are not consulted at all.
     //
-    //   Needed for the short target names. "NAME" as a substring also matches a
-    //   group called "TEAM NAME", so a player-name replacement overwrote the
-    //   team name with the player's; "#" matched the CONTENTS of any text
-    //   reading "#1 TEAM" and overwrote that with the shirt number. Both were
-    //   silent - the panel simply came out wrong. Proven by the personalisation
-    //   Q/A harness before this parameter existed.
-    function replaceInContainer(container, target, value, alreadyMatched, root, exactOnly) {
+    //   Both halves come from real damage. Unguarded, "NAME" as a substring
+    //   matched a group called "TEAM NAME" and the player's name overwrote the
+    //   team's; "#" matched the CONTENTS of any text reading "#1 TEAM" and
+    //   overwrote that with the shirt number. Both silent - the panel just came
+    //   out wrong.
+    //
+    //   This was briefly implemented as EXACT name matching instead, which
+    //   fixed those two and broke every mockup whose layer is not named exactly
+    //   "NAME": job Strictly_Molokai_Brown_Jersey_Order rendered 26 player
+    //   names before that change and none after it. Substring matching is not
+    //   the bug; matching artwork is.
+    function replaceInContainer(container, target, value, alreadyMatched, root, guarded) {
         if (!target || !container) return;
         root = root || container;
         var tUpper = target.toUpperCase();
         var cName = (container.name || "").toUpperCase();
-        var currentMatch = alreadyMatched ||
-            (exactOnly ? (cName === tUpper) : (cName.indexOf(tUpper) !== -1));
+        // A blocked container is a hard stop: neither its own name nor a match
+        // inherited from outside may reach the artwork inside it.
+        var cBlocked = guarded && _placeholderBlocked(cName);
+        var currentMatch = !cBlocked && (alreadyMatched || cName.indexOf(tUpper) !== -1);
 
         if (container.textFrames && container.textFrames.length > 0) {
             for (var k = 0; k < container.textFrames.length; k++) {
@@ -10651,8 +10667,9 @@ function runAutomation() {
                 var tfName = (tf.name || "").toUpperCase();
                 var tfCont = (tf.contents || "").toUpperCase();
                 
-                var nameHit = exactOnly ? (tfName === tUpper) : (tfName.indexOf(tUpper) !== -1);
-                var contentHit = exactOnly ? false : (tfCont.indexOf(tUpper) !== -1);
+                var tfBlocked = guarded && _placeholderBlocked(tfName);
+                var nameHit = !tfBlocked && tfName.indexOf(tUpper) !== -1;
+                var contentHit = guarded ? false : (tfCont.indexOf(tUpper) !== -1);
                 if (currentMatch || nameHit || contentHit) {
                     // EMPTY EXCEL CELL -> REMOVE THE PLACEHOLDER, do not blank it.
                     //
@@ -10946,7 +10963,7 @@ function runAutomation() {
 
         if (container.groupItems) {
             for (var g = 0; g < container.groupItems.length; g++) {
-                replaceInContainer(container.groupItems[g], target, value, currentMatch, root, exactOnly);
+                replaceInContainer(container.groupItems[g], target, value, currentMatch, root, guarded);
             }
         }
     }
