@@ -18,16 +18,63 @@ function runAutomation() {
             }
         }
 
+        // CHUNKED RENDER / RESUME.
+        //
+        // Python may run this script SEVERAL TIMES for one order, quitting and
+        // relaunching Illustrator in between. A long multi-file order degrades
+        // the Illustrator session until even the first cross-document
+        // duplicate() fails with PARM, and no amount of panel-level rollback
+        // repairs that - only a fresh process does. See
+        // specs/parm-restart-resume/plan.md for the evidence.
+        //
+        // The contract is deliberately narrow: EVERYTHING above the size loop
+        // re-runs identically on every chunk (open pattern, index it, open
+        // mockup, index it, pre-measure, create the order doc). Only where the
+        // loop STARTS changes. Caching any of that across chunks re-opens the
+        // 792pt shift and the non-active-document index cost, both of which
+        // fail silently - see docs/792PT_COORDINATE_SHIFT.md and warmNameIndex.
+        var RESUME_PATH = (typeof resumeStatePath !== 'undefined' && resumeStatePath)
+            ? resumeStatePath
+            : ((typeof jobDir !== 'undefined' ? jobDir : outputDir) + "/render_state.json");
+        // 0 = never chunk, which is exactly what every single-file job wants and
+        // what this file did before chunking existed.
+        var FILES_PER_RUN = (typeof filesPerRun !== 'undefined' && filesPerRun > 0) ? filesPerRun : 0;
+        var resumeState = null;
+        try {
+            var rsFile = new File(RESUME_PATH);
+            if (rsFile.exists) {
+                rsFile.open("r");
+                var rsRaw = rsFile.read();
+                rsFile.close();
+                if (rsRaw && rsRaw.length > 2) resumeState = JSON.parse(rsRaw);
+            }
+        } catch (eRS) { resumeState = null; }
+        // What counts as a resume point: a checkpoint that is not marked done
+        // and actually names a group to continue from. Python deletes the file
+        // when a job starts, but a stale one must never make a fresh order skip
+        // half its sizes.
+        //
+        // NOTE the field NOT consulted here: restart_needed. That flag belongs
+        // to Python's chunk loop, which clears it the moment it acts on it - so
+        // that a chunk which dies early cannot leave the flag set and have the
+        // loop restart the same chunk for ever. Resuming must not depend on it.
+        if (resumeState && (resumeState.done || !(resumeState.next_group_index > 0))) resumeState = null;
+
         // Live logging: open/append/close per write so the log is readable on
         // disk WHILE the job runs. A single buffered handle stays 0 bytes until
         // close, which leaves a stuck job with no diagnostics at all.
         var logPath = outputDir + "/debug_log.txt";
-        var logInit = new File(logPath); logInit.open("w"); logInit.close();
+        // Truncate on the FIRST chunk only. A resumed run appends: the earlier
+        // chunks' log is the only record of what has already been built, and on
+        // a PARM investigation it is the only evidence that exists.
+        if (!resumeState) {
+            var logInit = new File(logPath); logInit.open("w"); logInit.close();
+        }
         function log(msg) {
             var f = new File(logPath);
             if (f.open("a")) { f.writeln(new Date().toTimeString() + ": " + msg); f.close(); }
         }
-        
+
         // MUST be initialized HERE, not next to renameSizeTags further down.
         // runAutomation() is one long function body: the per-item processing
         // loop (search "START PROCESSING PART") is an inline statement that
@@ -211,6 +258,13 @@ function runAutomation() {
         var ORDER_FLOOR_Y = -7500; // no new row may start below this
         var orderDocIndex = 1;     // 1 -> production_ready_order.ai
         var orderDocFiles = [];    // every file name actually saved, in order
+        // CHUNKING: how many .ai files THIS run has saved, and whether it has
+        // been asked to stop so Python can restart Illustrator. Both reset with
+        // the process, which is the point - the durable counts live in
+        // render_state.json.
+        var filesWrittenThisRun = 0;
+        var chunkStop = false;
+        var chunkNumber = resumeState ? ((resumeState.chunk || 1) + 1) : 1;
         // SPLIT PER SIZE: a SECOND reason to start a new order file, on top of
         // the canvas-overflow rule above. Set by illustrator_automation.py when
         // the mockup on disk is over 5 MB (see the note there for the measured
@@ -809,7 +863,17 @@ function runAutomation() {
                 // side-first naming ("Right Short Sleeve", "LeftShort Sleeve" -
                 // findAnywhere strips spaces so both spellings match)
                 ["Right Short Sleeve", "Left Short Sleeve"],
-                ["Right Long Sleeve", "Left Long Sleeve"]
+                ["Right Long Sleeve", "Left Long Sleeve"],
+                // SS / LS abbreviations, both orders. findAnywhere strips every
+                // non-alphanumeric, so one entry per logical form covers
+                // "SS Right", "SSRight", "SS_Right" and "S.S. Right" alike.
+                // This list is what DECIDES whether the order is expanded into
+                // per-side prints at all - a mockup named the short way would
+                // otherwise render one shared sleeve design for both sides.
+                ["SS Right", "SS Left"],
+                ["Right SS", "Left SS"],
+                ["LS Right", "LS Left"],
+                ["Right LS", "Left LS"]
             ];
             for (var p = 0; p < pairs.length; p++) {
                 if (findAnywhere(mockupDoc, pairs[p][0]) && findAnywhere(mockupDoc, pairs[p][1])) return true;
@@ -880,7 +944,41 @@ function runAutomation() {
         }
         var itemsProcessed = 0;
 
-        for (var i = 0; i < plan.production_groups.length; i++) {
+        // RESUME. The ONLY place a resumed run differs from a fresh one. Every
+        // counter restored here is durable state that a previous chunk earned
+        // and this process would otherwise start from zero:
+        //
+        //   orderDocIndex/orderDocFiles - or order_files.txt lists this chunk's
+        //       files only and the .ai naming restarts at 1.
+        //   orderLabelSeen              - or a size that already spilled into
+        //       _2.ai loses the suffix and overwrites its own first file.
+        //   exportFileCounters          - or JPG numbering restarts at <size>1
+        //       and overwrites renders the earlier chunk already wrote. This is
+        //       the one that bites when a size is too tall for one canvas: the
+        //       counter is keyed by SIZE, not by file, so it legitimately spans
+        //       two .ai files.
+        //   parmErrors/parmBudgetUsed   - or parm_errors.txt reports only the
+        //       last chunk, and the whole-job rebuild cap resets per chunk.
+        //   itemsProcessed              - or the progress bar drops back to 50%
+        //       at every restart.
+        var resumeStart = 0;
+        if (resumeState) {
+            resumeStart = resumeState.next_group_index || 0;
+            orderDocIndex = resumeState.order_doc_index || 1;
+            orderDocFiles = resumeState.order_doc_files || [];
+            orderLabelSeen = resumeState.order_label_seen || {};
+            orderDocLabel = resumeState.order_doc_label || null;
+            exportFileCounters = resumeState.export_file_counters || {};
+            parmErrors = resumeState.parm_errors || [];
+            parmBudgetUsed = resumeState.parm_budget_used || 0;
+            itemsProcessed = resumeState.items_processed || 0;
+            log("=== RESUMED (chunk " + ((resumeState.chunk || 1) + 1) + ") after an Illustrator restart ===");
+            log("RESUME: continuing at production group " + resumeStart + " of " +
+                plan.production_groups.length + "; " + orderDocFiles.length +
+                " file(s) already saved: " + orderDocFiles.join(", "));
+        }
+
+        for (var i = resumeStart; i < plan.production_groups.length; i++) {
             var group = plan.production_groups[i];
             var sizeLabel = getFriendlySize(group.size);
 
@@ -900,8 +998,15 @@ function runAutomation() {
                 // which is not a size: the shared accessories ride along in
                 // whichever file is open, per explicit instruction.
                 if (SPLIT_PER_SIZE && artboardCount > 0 && sizeLabel !== "Universal") {
-                    startNextOrderDoc("heavy mockup - one .ai per size, next is " + sizeLabel);
+                    startNextOrderDoc("heavy mockup - one .ai per size, next is " + sizeLabel, i, true);
                 }
+                // CHUNK BOUNDARY. startNextOrderDoc has saved and closed the
+                // file and declined to open a new one, so there is nothing to
+                // place into. Break BEFORE placeSizeGroupLabel below, which
+                // would otherwise draw onto a document that no longer exists.
+                // This size has not been touched, and the checkpoint names it
+                // as where the next chunk resumes.
+                if (chunkStop) break;
                 // Claim the (possibly brand-new) file for this size so
                 // orderFileName can name it after the size. The counter goes
                 // back to 1 here on purpose: a "_2" earned by a PREVIOUS size
@@ -919,8 +1024,11 @@ function runAutomation() {
                 if (sizeNeedH > 0 && artboardCount > 0 &&
                     (currentY - sizeNeedH) < ORDER_FLOOR_Y && (ORDER_TOP_Y - sizeNeedH) >= ORDER_FLOOR_Y) {
                     startNextOrderDoc("size " + sizeLabel + " needs about " + Math.round(sizeNeedH) +
-                        "pt but only " + Math.round(currentY - ORDER_FLOOR_Y) + "pt is left");
+                        "pt but only " + Math.round(currentY - ORDER_FLOOR_Y) + "pt is left", i, true);
                 }
+                // Same reason as the break above: nothing of this size is on the
+                // canvas yet, so group i is a clean resume point.
+                if (chunkStop) break;
                 placeSizeGroupLabel(sizeLabel);
                 lastSizeLabel = sizeLabel;
                 pmLastSleevePanel = null; // never pair sleeves across a size boundary
@@ -1015,8 +1123,13 @@ function runAutomation() {
                         if (!anchorsAbove && artboardCount > 0) {
                             var needH = patternPieceHeightFor(targetGroupName);
                             if (needH > 0 && (currentY - needH) < ORDER_FLOOR_Y) {
+                                // mayStop = FALSE. This split lands in the MIDDLE
+                                // of a size: half its panels are already placed
+                                // and the rest continue in the next file. There
+                                // is no clean resume point here - group i is
+                                // half-built - so a chunk must never end on it.
                                 startNextOrderDoc("'" + displayGroupName + "' (" + Math.round(needH) +
-                                    "pt tall) would hang below the canvas");
+                                    "pt tall) would hang below the canvas", i, false);
                                 placeSizeGroupLabel(sizeLabel); // this size continues here - label it again
                                 // The accessory master was built in the file we
                                 // just closed - rebuild it from the pattern in
@@ -1968,6 +2081,32 @@ function runAutomation() {
             }
         }
 
+        // CHUNK EXIT. The loop stopped early so Illustrator can be restarted.
+        //
+        // Everything below this point is END-OF-ORDER work - the warnings files,
+        // parm_errors.txt, order_files.txt, the final save, status 96 - and none
+        // of it may run yet: each of those writers opens its file with "w", so a
+        // chunk running them would truncate the previous chunks' reports and
+        // leave only its own. Returning here is what makes "final chunk only"
+        // true without a flag on every one of them.
+        //
+        // The order document was already saved and closed by startNextOrderDoc,
+        // which returned without opening a new one - so there is nothing to save
+        // and `orderDoc` now points at a closed document. Do not touch it.
+        if (chunkStop) {
+            try {
+                if (mockupDoc) { mockupDoc.close(SaveOptions.DONOTSAVECHANGES); log("Mockup doc closed."); }
+                if (logoLibraryDoc) { logoLibraryDoc.close(SaveOptions.DONOTSAVECHANGES); log("Logo library doc closed."); }
+            } catch (eChunkClose) {
+                // Not fatal: Python quits Illustrator next anyway. Logged only so
+                // a dialog-blocked close is visible if the quit then times out.
+                log("CHUNK: could not close a source document: " + eChunkClose.message);
+            }
+            log("=== CHUNK " + chunkNumber + " COMPLETE - handing back to the backend for an Illustrator restart ===\n");
+            updateStatus("Restarting Illustrator, then continuing the order...", progressPct(), false);
+            return;
+        }
+
         // SLEEVE-MATCH: hand the warnings to the backend (jobDir JSON -> shown
         // on the frontend at end of job) and drop a readable copy into the
         // renders folder so it ships inside the zip next to debug_log.txt.
@@ -2137,6 +2276,11 @@ function runAutomation() {
         // jump 100 -> 90 -> 100 when the backend carried on afterwards.
         // illustrator_automation.py writes the one true terminal status.
         updateStatus("Finishing up...", 96, false);
+        // The order is finished: stamp the checkpoint so nothing can resume from
+        // it. Python deletes the file at job start too, but this is the record
+        // the outer loop reads to decide whether to run another chunk, and
+        // "restart_needed: false" is what ends that loop.
+        markRenderStateDone();
         log("Rendering complete at: " + new Date().toTimeString());
     } catch (e) {
         if (typeof logPath !== 'undefined') {
@@ -3857,7 +4001,12 @@ function runAutomation() {
     // brand new one. Every cross-document reference is dropped here: the three
     // "anchor to the piece above" caches and the accessory master (reset by the
     // caller) would otherwise point into a closed document.
-    function startNextOrderDoc(reason) {
+    // resumeGroupIndex - the production group the NEXT chunk must start at, used
+    //     only when this call ends a chunk.
+    // mayStop - whether this is a clean size boundary. FALSE for the mid-size
+    //     overflow split, where half a size is already on the canvas and there
+    //     is no resume point.
+    function startNextOrderDoc(reason, resumeGroupIndex, mayStop) {
         var closing = orderFileName(orderDocIndex);
         // The NEXT file's name is not predictable here under SPLIT_PER_SIZE (it
         // depends on the size that is about to claim it), so this only reports
@@ -3881,6 +4030,23 @@ function runAutomation() {
         if (SPLIT_PER_SIZE && orderDocLabel) {
             orderLabelSeen[orderDocLabel] = (orderLabelSeen[orderDocLabel] || 1) + 1;
         }
+
+        // CHECKPOINT. Written only HERE, immediately after a successful save and
+        // close, so the state file can never name a file that is not already
+        // complete on disk. Everything the next chunk needs is in it.
+        filesWrittenThisRun++;
+        var moreToBuild = (typeof resumeGroupIndex === "number") &&
+                          (resumeGroupIndex < plan.production_groups.length);
+        if (mayStop && FILES_PER_RUN > 0 && filesWrittenThisRun >= FILES_PER_RUN && moreToBuild) {
+            writeRenderState(resumeGroupIndex, true);
+            chunkStop = true;
+            log("ORDER FILE: " + filesWrittenThisRun + " file(s) written this run (limit " +
+                FILES_PER_RUN + ") - stopping so Illustrator can be restarted before the rest.");
+            updateStatus("Restarting Illustrator before the next sizes...", progressPct(), false);
+            return;   // deliberately NO new order document
+        }
+        writeRenderState(resumeGroupIndex, false);
+
         orderDoc = app.documents.add(DocumentColorSpace.CMYK);
         clearOrderDocSwatches(orderDoc);
         app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS;
@@ -3890,6 +4056,93 @@ function runAutomation() {
         pmLastSleevePanel = null;
         ribCuffSleeveBySize = {};
         log("ORDER FILE: " + orderFileName(orderDocIndex) + " created (CMYK), layout restarted at Y=" + ORDER_TOP_Y + ".");
+    }
+
+    // Progress across the WHOLE order rather than this chunk - otherwise the bar
+    // falls back to 50% at every Illustrator restart.
+    function progressPct() {
+        if (!totalItems) return 50;
+        return 50 + Math.floor((itemsProcessed / totalItems) * 40);
+    }
+
+    // JSON writing for the checkpoint, built by hand on purpose.
+    //
+    // The bundle's JSON.stringify polyfill escapes NOTHING - it wraps a string
+    // in quotes and hopes. parmErrors carries raw Illustrator messages and panel
+    // names, so one quote or backslash in there would produce a state file that
+    // JSON.parse (which is eval) either rejects or, far worse, executes.
+    function jsonStr(s) {
+        var out = "", ch;
+        s = String(s);
+        for (var k = 0; k < s.length; k++) {
+            ch = s.charAt(k);
+            if (ch === '"') out += '\\"';
+            else if (ch === "\\") out += "\\\\";
+            else if (ch === "\n") out += "\\n";
+            else if (ch === "\r") out += "\\r";
+            else if (ch === "\t") out += "\\t";
+            else if (ch < " ") out += " ";
+            else out += ch;
+        }
+        return '"' + out + '"';
+    }
+    function jsonStrList(arr) {
+        var parts = [];
+        for (var k = 0; k < arr.length; k++) parts.push(jsonStr(arr[k]));
+        return "[" + parts.join(",") + "]";
+    }
+    function jsonNumMap(obj) {
+        var parts = [];
+        for (var k in obj) {
+            if (!obj.hasOwnProperty(k)) continue;
+            parts.push(jsonStr(k) + ":" + (Number(obj[k]) || 0));
+        }
+        return "{" + parts.join(",") + "}";
+    }
+
+    // THE CHECKPOINT. Called only from startNextOrderDoc, immediately after a
+    // successful save + close, so it can never name a file that is not already
+    // complete on disk. Never throws: losing the checkpoint costs a repeated
+    // chunk, while throwing here would lose the whole order.
+    function writeRenderState(nextGroupIndex, restartNeeded) {
+        try {
+            var f = new File(RESUME_PATH);
+            f.open("w");
+            f.write("{\n" +
+                '  "next_group_index": ' + (nextGroupIndex || 0) + ",\n" +
+                '  "order_doc_index": ' + orderDocIndex + ",\n" +
+                '  "order_doc_label": ' + (orderDocLabel ? jsonStr(orderDocLabel) : "null") + ",\n" +
+                '  "order_doc_files": ' + jsonStrList(orderDocFiles) + ",\n" +
+                '  "order_label_seen": ' + jsonNumMap(orderLabelSeen) + ",\n" +
+                '  "export_file_counters": ' + jsonNumMap(exportFileCounters) + ",\n" +
+                '  "parm_errors": ' + jsonStrList(parmErrors) + ",\n" +
+                '  "parm_budget_used": ' + parmBudgetUsed + ",\n" +
+                '  "items_processed": ' + itemsProcessed + ",\n" +
+                '  "total_items": ' + totalItems + ",\n" +
+                '  "chunk": ' + chunkNumber + ",\n" +
+                '  "files_written_this_run": ' + filesWrittenThisRun + ",\n" +
+                '  "restart_needed": ' + (restartNeeded ? "true" : "false") + ",\n" +
+                '  "done": false\n' +
+                "}");
+            f.close();
+        } catch (eWS) { log("CHECKPOINT: could not write " + RESUME_PATH + ": " + eWS.message); }
+    }
+
+    // End of the whole order. Leaves a file the outer loop can read as "stop",
+    // and which a later run cannot mistake for a resume point.
+    function markRenderStateDone() {
+        try {
+            var f = new File(RESUME_PATH);
+            f.open("w");
+            f.write("{\n" +
+                '  "next_group_index": ' + plan.production_groups.length + ",\n" +
+                '  "order_doc_files": ' + jsonStrList(orderDocFiles) + ",\n" +
+                '  "chunk": ' + chunkNumber + ",\n" +
+                '  "restart_needed": false,\n' +
+                '  "done": true\n' +
+                "}");
+            f.close();
+        } catch (eWD) { log("CHECKPOINT: could not mark the render state done: " + eWD.message); }
     }
 
     // Only written when the job actually needed more than one file, so a normal
@@ -9644,9 +9897,38 @@ function runAutomation() {
         }
         var targets = [];
         if (nPart.indexOf("sleeve") !== -1) {
-            if (nPart.indexOf("right") !== -1) targets.push("Right Sleeve", "Right_Sleeve", "RightSleeve", "Short Sleeve Right", "Long Sleeve Right", "Sleeve Right", "Right Short Sleeve", "Right Long Sleeve", "Sleeve");
-            else if (nPart.indexOf("left") !== -1) targets.push("Left Sleeve", "Left_Sleeve", "LeftSleeve", "Short Sleeve Left", "Long Sleeve Left", "Sleeve Left", "Left Short Sleeve", "Left Long Sleeve", "Sleeve");
-            else targets.push("Short Sleeve", "Short_Sleeve", "Long Sleeve", "Long_Sleeve", "Full Sleeve", "Sleeve", "sleeve", "Sleeves", "Short Sleeve Right", "Short Sleeve Left", "Long Sleeve Right", "Long Sleeve Left", "Right Short Sleeve", "Left Short Sleeve", "Right Long Sleeve", "Left Long Sleeve", "Right Sleeve", "Left Sleeve");
+            // SS / LS ABBREVIATIONS: "SS" = Short Sleeve, "LS" = Long Sleeve,
+            // with or without a side ("SS Right", "LS Left").
+            //
+            // Kept LENGTH-AWARE: a short-sleeve item must not fall into an "LS"
+            // group on a mockup that carries both, and vice versa. When the part
+            // name says neither, both are tried - same tolerance the full-word
+            // list above has always had.
+            //
+            // Ordering matters and is deliberate: these go AFTER the full-word
+            // names, so every mockup that resolves today resolves to exactly the
+            // same group, and BEFORE the bare "Sleeve" fallback, so an "SS Right"
+            // group wins over a generic shared "Sleeve" one.
+            var abbr = [];
+            if (nPart.indexOf("short") !== -1 || nPart.indexOf("half") !== -1) abbr = ["SS"];
+            else if (nPart.indexOf("long") !== -1 || nPart.indexOf("full") !== -1) abbr = ["LS"];
+            else abbr = ["SS", "LS"];
+
+            if (nPart.indexOf("right") !== -1) {
+                targets.push("Right Sleeve", "Right_Sleeve", "RightSleeve", "Short Sleeve Right", "Long Sleeve Right", "Sleeve Right", "Right Short Sleeve", "Right Long Sleeve");
+                for (var ar = 0; ar < abbr.length; ar++) targets.push(abbr[ar] + " Right", "Right " + abbr[ar]);
+                targets.push("Sleeve");
+            } else if (nPart.indexOf("left") !== -1) {
+                targets.push("Left Sleeve", "Left_Sleeve", "LeftSleeve", "Short Sleeve Left", "Long Sleeve Left", "Sleeve Left", "Left Short Sleeve", "Left Long Sleeve");
+                for (var al = 0; al < abbr.length; al++) targets.push(abbr[al] + " Left", "Left " + abbr[al]);
+                targets.push("Sleeve");
+            } else {
+                targets.push("Short Sleeve", "Short_Sleeve", "Long Sleeve", "Long_Sleeve", "Full Sleeve");
+                // Bare "SS"/"LS" before the bare "Sleeve", for the same reason.
+                for (var an = 0; an < abbr.length; an++) targets.push(abbr[an]);
+                targets.push("Sleeve", "sleeve", "Sleeves", "Short Sleeve Right", "Short Sleeve Left", "Long Sleeve Right", "Long Sleeve Left", "Right Short Sleeve", "Left Short Sleeve", "Right Long Sleeve", "Left Long Sleeve", "Right Sleeve", "Left Sleeve");
+                for (var ab = 0; ab < abbr.length; ab++) targets.push(abbr[ab] + " Right", abbr[ab] + " Left", "Right " + abbr[ab], "Left " + abbr[ab]);
+            }
         }
         else if (nPart.indexOf("front") !== -1) {
             // FULL-BUTTON: "front-left"/"front-right" (see mockupHasBothFrontSides).
@@ -10242,6 +10524,37 @@ function runAutomation() {
                 var tfCont = (tf.contents || "").toUpperCase();
                 
                 if (currentMatch || tfName.indexOf(tUpper) !== -1 || tfCont.indexOf(tUpper) !== -1) {
+                    // EMPTY EXCEL CELL -> REMOVE THE PLACEHOLDER, do not blank it.
+                    //
+                    // A size with no name or no number is normal (a plain set
+                    // among personalised ones), and the panel must simply print
+                    // without that text. Assigning "" looked like the obvious
+                    // way to do that and is the reason such orders failed: it
+                    // leaves a text frame with ZERO characters behind, and
+                    // everything downstream assumes there is text in it -
+                    // zOrder, textRange.characterAttributes, and above all
+                    // visibleBounds, which the fit block then turns into a NaN
+                    // offset and applies to tf.left.
+                    //
+                    // Removing the frame is also the only reading that matches
+                    // the mockup: leaving it would print the placeholder text
+                    // ("PLAYER NAME") on the finished panel.
+                    //
+                    // applyLogoReplacements has always guarded its own empty
+                    // value the same way; only NAME/NUMBER were missing it.
+                    if (value === null || value === undefined ||
+                        String(value).replace(/^\s+|\s+$/g, "") === "") {
+                        try {
+                            tf.remove();
+                            // The collection shrank underneath the loop.
+                            k--;
+                            log("Text '" + target + "': no value in the Excel for this size - placeholder removed, this panel prints without it.");
+                        } catch (eEmptyRm) {
+                            log("Text '" + target + "': value is empty but the placeholder could not be removed (" + eEmptyRm.message + ") - left as it is, CHECK THIS PANEL.");
+                        }
+                        continue;
+                    }
+
                     // Mockup footprint: replaced text must occupy the same
                     // width and center as the original text (e.g. 66 -> 666).
                     var preBounds = null;
@@ -10251,6 +10564,31 @@ function runAutomation() {
                     // edge: shrinking must not grow the gap toward that text
                     // (e.g. name sitting at a fixed margin above the number).
                     var anchorSide = preBounds ? findVerticalNeighborSide(root, tf, preBounds) : null;
+
+                    // HORIZONTAL anchor: whatever the designer set in the mockup.
+                    //
+                    // The fit block below used to re-centre EVERY replacement on
+                    // the placeholder's centre, which silently overrode a
+                    // left- or right-aligned name: "RODRIGUEZ" over a left-set
+                    // "PLAYER NAME" came out centred, so it no longer started at
+                    // the left edge the mockup put it at. The text frame itself
+                    // keeps its justification (contents is assigned to the SAME
+                    // frame, further down), so only the repositioning was wrong.
+                    //
+                    // Read here rather than after the swap for the same reason
+                    // every other attribute is: this is the last moment the
+                    // frame is still the mockup's.
+                    // Reduced to a string HERE, inside its own try, so that a
+                    // frame with no readable paragraph attributes cannot throw
+                    // from inside the fit block below - that block's catch only
+                    // logs, so a throw there would skip the repositioning
+                    // altogether and leave the text wherever the resize put it.
+                    var justif = null;
+                    try {
+                        var jv = tf.textRange.paragraphAttributes.justification;
+                        if (jv === Justification.LEFT) justif = "left";
+                        else if (jv === Justification.RIGHT) justif = "right";
+                    } catch (eJu) { justif = null; }
 
                     var savedFillSpotName   = null;
                     var savedStrokeSpotName = null;
@@ -10445,7 +10783,20 @@ function runAutomation() {
                                 log("Text '" + value + "' wider than " + FIT_WIDTH_ALLOWANCE + "x mockup original: uniformly scaled to " + Math.round(fitK) + "% (fits " + FIT_WIDTH_ALLOWANCE + "x placeholder width).");
                             }
                             var finalB = tf.visibleBounds;
-                            tf.left += origCX - (finalB[0] + finalB[2]) / 2;
+                            // Keep the edge the mockup's alignment anchors to.
+                            // Left-aligned text must still START at the
+                            // placeholder's left edge and grow rightwards;
+                            // right-aligned must END at its right edge. Only
+                            // centred text (and anything unreadable) is centred.
+                            if (justif === "left") {
+                                tf.left += preBounds[0] - finalB[0];
+                                log("Anchored '" + value + "' to LEFT edge (mockup text is left-aligned).");
+                            } else if (justif === "right") {
+                                tf.left += preBounds[2] - finalB[2];
+                                log("Anchored '" + value + "' to RIGHT edge (mockup text is right-aligned).");
+                            } else {
+                                tf.left += origCX - (finalB[0] + finalB[2]) / 2;
+                            }
                             if (anchorSide === "above") {
                                 // Text above: keep the TOP edge so the gap to it stays as in the mockup.
                                 tf.top += preBounds[1] - finalB[1];
@@ -10536,9 +10887,26 @@ function runAutomation() {
     // root, not a size folder), so they keep their instance name: Twill_Tape_Item1.
     function nextExportFileName(sizeLabel, instanceName) {
         if (!sizeLabel || sizeLabel === "Universal") return instanceName;
-        var n = (exportFileCounters[sizeLabel] || 0) + 1;
-        exportFileCounters[sizeLabel] = n;
-        return sizeLabel + n;
+        // WHICH FILE OF THIS SIZE we are in - the same number the .ai carries,
+        // so production_ready_order_YM_2.ai holds YM_2_1.jpg, YM_2_2.jpg ...
+        // while production_ready_order_YM.ai holds YM1.jpg, YM2.jpg ...
+        //
+        // The counter used to be keyed by SIZE alone and ran straight across
+        // both files (YM1..YM7, then YM8..YM12). That is fine in one process and
+        // wrong the moment Illustrator restarts between the two files: the fresh
+        // process starts its counter at zero and rewrites YM1.jpg over the first
+        // file's render. Keying by size AND file number removes the collision
+        // instead of relying on the counter surviving the restart.
+        //
+        // Only SPLIT_PER_SIZE names files after a size, so a light-mockup job
+        // (orderDocLabel null) keeps exactly the numbering it has today.
+        var seen = (SPLIT_PER_SIZE && orderDocLabel === sizeLabel)
+            ? (orderLabelSeen[sizeLabel] || 1) : 1;
+        var counterKey = (seen > 1) ? (sizeLabel + "_" + seen) : sizeLabel;
+        var n = (exportFileCounters[counterKey] || 0) + 1;
+        exportFileCounters[counterKey] = n;
+        // The separator matters: "YM_2" + "1" would read as YM_21.
+        return (seen > 1) ? (sizeLabel + "_" + seen + "_" + n) : (sizeLabel + n);
     }
 
     function queueExport(idx, folder, name, sizeLabel) {

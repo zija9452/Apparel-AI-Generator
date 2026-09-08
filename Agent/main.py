@@ -92,7 +92,22 @@ logger = logging.getLogger("apparel-agent")
 # left running. install-agent.ps1 compares this against the version answering
 # on 8765 after it starts, which is the only way it can tell "the new agent is
 # up" from "the OLD agent is still holding the port and answered for it".
-AGENT_VERSION = "0.5.0"
+# 0.6.0 - chunked render. illustrator_automation.py now restarts Illustrator
+# every ILLUSTRATOR_FILES_PER_RUN order files and resumes from a checkpoint,
+# which is the fix for the session-level PARM failures on split orders. That
+# code ships INSIDE this package (services\), not through the JSX manifest, so
+# an agent left on 0.5.0 keeps rendering without it and keeps losing panels -
+# this bump is what makes install-agent.ps1 refuse to leave the old one running.
+#
+# 0.6.1 - every job now starts in a freshly launched Illustrator instead of
+# reusing one the designer has open (ILLUSTRATOR_RESTART_EVERY_JOB). 0.6.0 left
+# the first chunk as the only one running in a used session, which is the state
+# the PARM failures come from. The unsaved-work warning is unchanged.
+#
+# 0.6.2 - replaced personalisation text now keeps the mockup's horizontal
+# alignment. It was re-centred on the placeholder regardless, so a left-aligned
+# player name came out centred in production.
+AGENT_VERSION = "0.6.2"
 
 # Where every job lives on this PC. Renders and the zip are left here on
 # purpose - the designer owns this folder and decides when to clear it.

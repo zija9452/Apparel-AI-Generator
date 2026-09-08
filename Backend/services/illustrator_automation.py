@@ -18,6 +18,37 @@ logger = logging.getLogger("illustrator-automation")
 # (user-approved: 20 min; pehli item index-build ke liye kaafi gunjaish).
 WATCHDOG_STALE_SECONDS = 1200
 
+# CHUNKED RENDER: how many .ai files one Illustrator session may produce before
+# this module quits it and starts a fresh one.
+#
+# A long multi-file order degrades the session until even the first
+# cross-document duplicate() fails with PARM 1346458189, and a panel-level
+# rollback cannot repair that - it re-runs the identical failing call. File 1 of
+# any job has never failed; the failures track the number of files, not elapsed
+# time or memory. See specs/parm-restart-resume/plan.md for the measured
+# evidence.
+#
+# Costs about 5s per restart (re-open pattern + mockup, rebuild both name
+# indexes). The run this was diagnosed from burned ~6 minutes on rebuilds that
+# could never succeed, so this is expected to be FASTER, not slower.
+# 0 disables chunking entirely and restores the single-run behaviour.
+ILLUSTRATOR_FILES_PER_RUN = 2
+
+# Hard stop for the chunk loop. Only reachable if the JSX keeps asking for a
+# restart without making progress; without it a checkpoint bug would loop for
+# ever holding the designer's Illustrator.
+MAX_RENDER_CHUNKS = 40
+
+# Start every job in a freshly launched Illustrator rather than reusing one the
+# designer already has open. See the long note at the pre-flight for why the old
+# "reuse, it belongs to them" rule was dropped: the chunk loop restarts the
+# application mid-order anyway, and sparing only the FIRST chunk left it as the
+# single chunk running in a used session.
+#
+# The unsaved-work warning is NOT part of this switch - it runs either way,
+# because the leftover-document sweep closes the designer's files regardless.
+ILLUSTRATOR_RESTART_EVERY_JOB = True
+
 
 def _kill_illustrator_process():
     """Force-kills Illustrator so the blocking DoJavaScript COM call returns.
@@ -1167,6 +1198,45 @@ def _quit_illustrator(prog_ids, app=None, timeout=30):
     logger.error("Illustrator process could not be terminated")
     return False
 
+
+def _connect_illustrator(prog_ids):
+    """Attach to a running Illustrator, or launch one. None if neither works.
+
+    Same ProgID order and retry shape as the connect at job start; kept separate
+    because the chunk loop has to do it again after each restart, and the job
+    start version is entangled with the unsaved-work and memory pre-flights that
+    must NOT run a second time mid-order."""
+    for prog_id in prog_ids:
+        for attempt in range(3):
+            try:
+                try:
+                    app = win32com.client.GetActiveObject(prog_id)
+                    logger.info(f"Reconnected to active {prog_id}")
+                except Exception:
+                    app = win32com.client.Dispatch(prog_id)
+                    logger.info(f"Dispatched new {prog_id}")
+                return app
+            except Exception as e:
+                logger.warning(f"Reconnect attempt {attempt + 1} failed for {prog_id}: {e}")
+                if attempt < 2:
+                    time.sleep(3)
+    return None
+
+
+def _read_render_state(path):
+    """The JSX chunk checkpoint, or {} when there is none.
+
+    A missing or unreadable file means "no restart wanted", which is the safe
+    reading: the order either finished or died, and either way looping again
+    would re-run work rather than continue it."""
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except (OSError, ValueError) as e:
+        logger.warning(f"Could not read the render checkpoint at {path}: {e}")
+        return {}
+
+
 def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mockup_ai_path, reference_ai_path=None,
                                logo_library_ai_path=None, ignore_missing_fonts=False, force_font_refresh=False,
                                ignore_center_match_warning=False, ignore_local_tag_warning=False,
@@ -1251,19 +1321,31 @@ def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mock
         update_status(job_dir, "Installing job fonts...", 15)
         newly_installed = install_job_fonts(job_dir)
 
-        # An Illustrator that is ALREADY OPEN is reused, not restarted. It
-        # belongs to the person sitting in front of it - a designer keeps it
-        # open all day, and relaunching the application under them on every job
-        # is both slow and rude. Its open documents are closed after connecting
-        # (the leftover sweep below), which is all a normal job actually needs:
-        # what breaks jobs is another document's swatches and same-named
-        # groups, not the application itself.
+        # EVERY JOB STARTS IN A FRESH ILLUSTRATOR.
         #
-        # FONTS ARE THE ONE EXCEPTION. install_job_fonts registered new fonts
-        # with Windows a moment ago, and Illustrator only reads the font list
-        # at launch - a reused instance cannot see them, so the order would
-        # render in substituted fonts and look wrong. There is no way to make
-        # it re-read them short of a restart, so that case still restarts.
+        # This used to reuse an already-open Illustrator and only close its
+        # documents, on the grounds that the application belongs to the designer
+        # sitting in front of it and relaunching it under them is slow and rude.
+        # That reasoning no longer survives its own consequences:
+        #
+        #   - The chunk loop restarts Illustrator every ILLUSTRATOR_FILES_PER_RUN
+        #     files anyway, so a split order already interrupts the designer
+        #     several times. Sparing them the FIRST one bought nothing.
+        #   - It left chunk 1 as the only chunk running in a used session, which
+        #     is exactly the state the PARM failures are traced to. Measured
+        #     2026-09-08: chunks 2-4 got a fresh process, chunk 1 did not.
+        #
+        # Fonts and memory used to be the only two reasons to restart. They are
+        # still worth naming - the status message differs, and the memory number
+        # is the only place real figures accumulate for tuning the threshold -
+        # but they no longer decide anything.
+        #
+        # Costs roughly 80s per job, measured on the 2026-09-08 run. Set
+        # ILLUSTRATOR_RESTART_EVERY_JOB = False to go back to reusing.
+        # The unsaved-work pre-flight below stays OUTSIDE the restart switch on
+        # purpose: the leftover sweep after connecting closes the designer's
+        # documents whether or not the application itself is relaunched, so
+        # turning restarts off must not also turn the warning off.
         if _illustrator_process_running():
             # UNSAVED-WORK pre-flight. Runs BEFORE _quit_illustrator, and
             # before anything else touches Illustrator, so nothing is lost by
@@ -1294,21 +1376,30 @@ def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mock
                 logger.info(f"Illustrator is using {mem_kb / 1024 / 1024:.2f} GB "
                             f"(restart threshold {ILLUSTRATOR_MEMORY_RESTART_KB / 1024 / 1024:.0f} GB)")
 
-            if newly_installed or force_font_refresh:
-                update_status(job_dir, "Restarting Illustrator to load the new fonts...", 18)
-                _quit_illustrator(prog_ids)
-                time.sleep(2)  # let Windows release the COM registration
-            elif mem_kb and mem_kb > ILLUSTRATOR_MEMORY_RESTART_KB:
+            if not ILLUSTRATOR_RESTART_EVERY_JOB:
+                logger.info("Illustrator is already open - reusing it; only its documents are closed.")
+                update_status(job_dir, "Using the Illustrator that is already open...", 18)
+            else:
                 # Safe to do without asking: the unsaved-work pre-flight above
                 # has already run, so anything the designer had open is either
                 # saved or they chose to lose it.
-                logger.info("Illustrator is over the memory threshold - restarting it before this job.")
-                update_status(job_dir, "Restarting Illustrator to free up memory...", 18)
+                #
+                # The reason only picks the wording. Every branch restarts.
+                if newly_installed or force_font_refresh:
+                    # install_job_fonts registered new fonts with Windows a
+                    # moment ago and Illustrator only reads the font list at
+                    # launch, so a reused instance would render in substituted
+                    # fonts. This case restarted even before restarts were
+                    # unconditional.
+                    why = "to load the new fonts"
+                elif mem_kb and mem_kb > ILLUSTRATOR_MEMORY_RESTART_KB:
+                    why = "to free up memory"
+                else:
+                    why = "for a clean session"
+                logger.info(f"Restarting Illustrator {why} before this job.")
+                update_status(job_dir, f"Restarting Illustrator {why}...", 18)
                 _quit_illustrator(prog_ids)
-                time.sleep(2)
-            else:
-                logger.info("Illustrator is already open - reusing it; only its documents are closed.")
-                update_status(job_dir, "Using the Illustrator that is already open...", 18)
+                time.sleep(2)  # let Windows release the COM registration
 
         update_status(job_dir, "Connecting to Adobe Illustrator...", 20)
 
@@ -1585,6 +1676,12 @@ def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mock
         ref_path_arg = f"'{os.path.abspath(reference_ai_path).replace('\\', '/')}'" if reference_ai_path else "undefined"
         logo_lib_arg = f"'{os.path.abspath(logo_library_ai_path).replace('\\', '/')}'" if logo_library_ai_path else "undefined"
 
+        # CHUNKED RENDER. The JSX writes this file after every .ai it saves and
+        # closes, and reads it back on the next run to continue where it left
+        # off. Deleted below before the first chunk so a crashed earlier job can
+        # never make a fresh order skip half its sizes.
+        resume_state_path = os.path.join(job_dir, "render_state.json")
+
         script_args = (
             f"var planPath = '{plan_json_path.replace('\\', '/')}'; "
             f"var outputDir = '{render_dir.replace('\\', '/')}'; "
@@ -1592,7 +1689,9 @@ def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mock
             f"var jobDir = '{job_dir.replace('\\', '/')}'; "
             f"var jobId = '{job_id}'; "
             f"var referencePath = {ref_path_arg}; "
-            f"var logoLibraryPath = {logo_lib_arg};"
+            f"var logoLibraryPath = {logo_lib_arg}; "
+            f"var resumeStatePath = '{resume_state_path.replace('\\', '/')}'; "
+            f"var filesPerRun = {ILLUSTRATOR_FILES_PER_RUN};"
         )
         
         # Read polyfill and main script
@@ -1616,11 +1715,13 @@ def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mock
         # Watchdog: DoJavaScript blocks this thread until the JSX finishes.
         # The JSX updates status.json per part, so a stale file means the
         # script is stuck; killing Illustrator makes the COM call return.
+        # Started fresh for EACH chunk - the gap while Illustrator restarts is
+        # not a stall, and one watchdog spanning the whole order would read it
+        # as one.
         status_path = os.path.join(job_dir, "status.json")
-        watchdog_stop = threading.Event()
 
-        def _watchdog():
-            while not watchdog_stop.wait(15):
+        def _watchdog(stop_event):
+            while not stop_event.wait(15):
                 try:
                     age = time.time() - os.path.getmtime(status_path)
                 except OSError:
@@ -1631,17 +1732,118 @@ def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mock
                     _kill_illustrator_process()
                     return
 
-        watchdog = threading.Thread(target=_watchdog, daemon=True)
-        watchdog.start()
-
         # Bulletproof execution: Use $.evalFile to load the bundle
         # This bypasses COM's DoJavaScriptFile which can be flaky with paths/args
         eval_command = f"$.evalFile(new File('{combined_script_path.replace('\\', '/')}'))"
+
+        # A checkpoint left by an earlier job in this folder would make the JSX
+        # resume into the middle of an order it is not building. Always start
+        # clean.
         try:
-            app.DoJavaScript(eval_command)
-        finally:
-            watchdog_stop.set()
-        
+            if os.path.exists(resume_state_path):
+                os.remove(resume_state_path)
+        except OSError as e:
+            logger.warning(f"Could not clear the old render checkpoint: {e}")
+
+        # ------------------------------------------------------------------
+        # CHUNKED RENDER LOOP.
+        #
+        # The JSX cannot restart the Illustrator it is running inside - it is
+        # executing inside the blocking DoJavaScript call below. So it saves its
+        # files, writes a checkpoint, and returns asking for a restart; this loop
+        # provides the restart and runs it again. See ILLUSTRATOR_FILES_PER_RUN.
+        # ------------------------------------------------------------------
+        chunk = 0
+        while True:
+            chunk += 1
+            watchdog_stop = threading.Event()
+            watchdog = threading.Thread(target=_watchdog, args=(watchdog_stop,), daemon=True)
+            watchdog.start()
+            try:
+                app.DoJavaScript(eval_command)
+            finally:
+                watchdog_stop.set()
+
+            state = _read_render_state(resume_state_path)
+            if not state.get("restart_needed"):
+                if chunk > 1:
+                    logger.info(f"Render finished after {chunk} chunk(s).")
+                break
+
+            if chunk >= MAX_RENDER_CHUNKS:
+                logger.error(
+                    f"Render still asking for a restart after {chunk} chunks - stopping. "
+                    f"The files already saved are intact; the rest of the order was not built."
+                )
+                break
+
+            # CONSUME the flag before doing anything with it. If the next chunk
+            # dies early - a crash, a killed Illustrator - it writes no new
+            # checkpoint, and a flag left set here would send this loop round
+            # again on the very same chunk until MAX_RENDER_CHUNKS. Clearing it
+            # now makes "restart" a one-shot request. The JSX does not read this
+            # field when deciding whether to resume, so clearing it costs nothing.
+            try:
+                state["restart_needed"] = False
+                with open(resume_state_path, "w") as f:
+                    json.dump(state, f, indent=2)
+            except OSError as e:
+                logger.warning(f"Could not clear the restart flag on the checkpoint: {e}")
+
+            done = len(state.get("order_doc_files", []))
+            logger.info(
+                f"Chunk {chunk} complete ({done} file(s) saved) - restarting Illustrator "
+                f"before the remaining sizes."
+            )
+            # Carry the JSX's own progress across, or the bar walks backwards to
+            # a hardcoded number at every restart.
+            total_items = state.get("total_items") or 0
+            done_items = state.get("items_processed") or 0
+            restart_pct = 50 + int((done_items / total_items) * 40) if total_items else 60
+            update_status(job_dir, "Restarting Illustrator, then continuing the order...", restart_pct)
+
+            # The order document was saved and closed by the JSX; the pattern is
+            # the only document this side still holds. Closing it first means the
+            # quit below has nothing to ask about.
+            try:
+                doc.Close(2)
+            except Exception as e:
+                logger.warning(f"Could not close the pattern before the restart: {e}")
+
+            # No unsaved-work prompt here on purpose. The pre-flight at job start
+            # already established that nothing of the designer's is at risk, and
+            # every document open now is one this job opened.
+            _quit_illustrator(prog_ids)
+            time.sleep(2)  # let Windows release the COM registration
+
+            app = _connect_illustrator(prog_ids)
+            if not app:
+                raise Exception(
+                    "Illustrator could not be restarted mid-order. The .ai files already "
+                    "saved are complete and usable; the remaining sizes were not built."
+                )
+            try:
+                app.UserInteractionLevel = -1  # aiDontDisplayAlerts
+            except Exception as e:
+                logger.warning(f"Could not set Silent mode after the restart: {e}")
+
+            # The JSX takes app.activeDocument as the pattern, exactly as it does
+            # on the first chunk. Everything else it needs - the mockup, the name
+            # indexes, the pre-measured pattern sizes - it rebuilds itself, and
+            # must: caching any of it across a restart re-opens the 792pt shift.
+            doc = None
+            for attempt in range(3):
+                try:
+                    doc = app.Open(abs_pattern_path)
+                    logger.info("Pattern re-opened for the next chunk")
+                    break
+                except Exception as e:
+                    logger.warning(f"Re-open attempt {attempt + 1} failed: {e}")
+                    if attempt < 2:
+                        time.sleep(2)
+                    else:
+                        raise
+
         # The JSX script will update status to 100% and is_ready: true
         # But we do a final verification and zip generation here
         
