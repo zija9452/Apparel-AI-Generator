@@ -1441,9 +1441,21 @@ function runAutomation() {
                                             log("Checking for 'remove'-named items (test-print size tags) in " + item.part_name + "...");
                                             removeNamedItems(pastedDesign, "remove");
 
+                                            // NOT gated on hasPers, on purpose.
+                                            //
+                                            // applyTextReplacements also sweeps away the placeholders
+                                            // this order gave no value for, and a part with NO
+                                            // personalisation at all is exactly the case that needs the
+                                            // sweep most: an empty text_replacements used to skip this
+                                            // block entirely, so the mockup's own "PLAYER NAME" and "88"
+                                            // printed on the finished panel. Passing the empty list marks
+                                            // both layers as unsupplied, which is the truth.
+                                            //
+                                            // The logo swap stays gated: it has nothing to sweep, and
+                                            // returns immediately on an empty list anyway.
+                                            log("Applying Text Replacements (Name/Number)...");
+                                            applyTextReplacements(pastedDesign, item.text_replacements || []);
                                             if (hasPers) {
-                                                log("Applying Text Replacements (Name/Number)...");
-                                                applyTextReplacements(pastedDesign, item.text_replacements);
                                                 log("Applying Logo Replacement (if requested)...");
                                                 applyLogoReplacements(pastedDesign, item.text_replacements, sleeveSide);
                                             }
@@ -9990,23 +10002,129 @@ function runAutomation() {
         } catch (e) {}
     }
 
+    // Delete personalisation placeholders the order said nothing about.
+    //
+    // Matches on the frame's NAME or an enclosing group's name only - never on
+    // its CONTENTS, unlike replaceInContainer. Contents matching is safe when
+    // the outcome is "overwrite this text"; it is not safe when the outcome is
+    // "delete this text", because a design that happens to read "#1 TEAM" or
+    // "NAME" would be destroyed and nothing would say so.
+    // `subTargets` match as substrings; `exactTargets` must equal the whole
+    // name. The split exists because the useful placeholder names come in two
+    // shapes and only one of them is safe to match loosely:
+    //   "PLAYER NUMBER" as a substring is unambiguous.
+    //   "NAME" as a substring also matches "TEAM NAME", which is real artwork.
+    // So bare NAME / NUM / # are accepted only as an exact name.
+    function _phMatch(name, subTargets, exactTargets) {
+        for (var s = 0; s < subTargets.length; s++) {
+            if (name.indexOf(subTargets[s]) !== -1) return true;
+        }
+        for (var e = 0; e < exactTargets.length; e++) {
+            if (name === exactTargets[e]) return true;
+        }
+        return false;
+    }
+
+    function removePlaceholders(container, subTargets, exactTargets, inheritedMatch) {
+        if (!container) return 0;
+        var removed = 0;
+        var here = inheritedMatch ||
+                   _phMatch((container.name || "").toUpperCase(), subTargets, exactTargets);
+        if (container.textFrames) {
+            for (var k = container.textFrames.length - 1; k >= 0; k--) {
+                var tf = container.textFrames[k];
+                var hit = here || _phMatch((tf.name || "").toUpperCase(), subTargets, exactTargets);
+                if (!hit) continue;
+                try {
+                    var was = "";
+                    try { was = tf.contents; } catch (eC) {}
+                    tf.remove();
+                    removed++;
+                    log("PERSONALISATION: '" + was + "' removed - the order gives no value for this placeholder, so the panel prints without it.");
+                } catch (eRm) {
+                    log("PERSONALISATION: a placeholder could not be removed (" + eRm.message + ") - it will print as it is, CHECK THIS PANEL.");
+                }
+            }
+        }
+        if (container.groupItems) {
+            for (var g = container.groupItems.length - 1; g >= 0; g--) {
+                removed += removePlaceholders(container.groupItems[g], subTargets, exactTargets, here);
+            }
+        }
+        return removed;
+    }
+
     function applyTextReplacements(container, replacements) {
+        // Which personalisation the order actually carries for THIS part.
+        // A layer that is simply ABSENT is the case this tracks - it is not the
+        // same as one present with an empty value (replaceInContainer handles
+        // that), and it is the more common one: the planner emits NAME and
+        // NUMBER independently, so a back with a name but no number arrives
+        // carrying only the NAME entry. Nothing then touched the mockup's own
+        // number and it printed on the finished panel - reported on job
+        // 888888888888-5, where the back printed the mockup's "88".
+        var suppliedName = false, suppliedNumber = false;
+
         for (var i = 0; i < replacements.length; i++) {
             var rep = replacements[i];
             if (!rep.layer_name) continue;
 
             var lName = rep.layer_name.toUpperCase();
-            var targets = [lName];
-            
+            // Split on the same rule the sweep uses: a target long enough to be
+            // unambiguous may match as a substring; the short ones must match a
+            // whole name. See the exactOnly note on replaceInContainer for what
+            // the loose match was quietly destroying.
+            var subTargets = [], exactTargets = [lName];
+
             if (lName.indexOf("NAME") !== -1) {
-                targets.push("PLAYER NAME", "NAME_LAYER");
+                suppliedName = true;
+                subTargets.push("PLAYER NAME", "NAME_LAYER");
+                exactTargets.push("NAME");
             } else if (lName.indexOf("NUMBER") !== -1 || lName === "NUM" || lName === "#") {
-                targets.push("NUMBER", "NUM", "#", "PLAYER NUMBER");
+                suppliedNumber = true;
+                subTargets.push("PLAYER NUMBER", "NUMBER");
+                exactTargets.push("NUM", "#");
+            } else {
+                // Any other layer the designer named (SPONSOR, a custom tag).
+                // Keep the historical substring behaviour: nothing generic
+                // enough to collide is involved.
+                subTargets.push(lName);
             }
 
-            for (var t = 0; t < targets.length; t++) {
-                replaceInContainer(container, targets[t], rep.new_value, false, container);
+            for (var t = 0; t < subTargets.length; t++) {
+                replaceInContainer(container, subTargets[t], rep.new_value, false, container, false);
             }
+            // An exact target already covered by a substring target would find
+            // the same frame a second time and re-run the whole swap on it.
+            // Harmless but not free, and it is why a single number used to log
+            // "Number fit" three times: targets NUMBER, NUMBER and NUM all
+            // matched one group called "NUMBER".
+            for (var x = 0; x < exactTargets.length; x++) {
+                var already = false;
+                for (var y = 0; y < subTargets.length; y++) {
+                    if (exactTargets[x].indexOf(subTargets[y]) !== -1) { already = true; break; }
+                }
+                for (var z = 0; z < x; z++) {
+                    if (exactTargets[z] === exactTargets[x]) { already = true; break; }
+                }
+                if (already) continue;
+                replaceInContainer(container, exactTargets[x], rep.new_value, false, container, true);
+            }
+        }
+
+        // Whatever this order did NOT personalise must not print the mockup's
+        // own sample text.
+        //
+        // A filled-in placeholder keeps its frame name, so a sweep cannot tell
+        // "already replaced" from "never touched" by looking at the artwork.
+        // That is precisely why these run per LAYER and only for the one that
+        // was never supplied at all - the replacement above has, by then,
+        // already handled every layer the order did supply.
+        if (!suppliedName) {
+            removePlaceholders(container, ["PLAYER NAME", "NAME_LAYER"], ["NAME"], false);
+        }
+        if (!suppliedNumber) {
+            removePlaceholders(container, ["PLAYER NUMBER", "NUMBER"], ["NUM", "#"], false);
         }
     }
 
@@ -10508,12 +10626,22 @@ function runAutomation() {
         }
     }
 
-    function replaceInContainer(container, target, value, alreadyMatched, root) {
+    // exactOnly - the target must EQUAL the frame's or an enclosing group's
+    //   name, and the frame's CONTENTS are not consulted at all.
+    //
+    //   Needed for the short target names. "NAME" as a substring also matches a
+    //   group called "TEAM NAME", so a player-name replacement overwrote the
+    //   team name with the player's; "#" matched the CONTENTS of any text
+    //   reading "#1 TEAM" and overwrote that with the shirt number. Both were
+    //   silent - the panel simply came out wrong. Proven by the personalisation
+    //   Q/A harness before this parameter existed.
+    function replaceInContainer(container, target, value, alreadyMatched, root, exactOnly) {
         if (!target || !container) return;
         root = root || container;
         var tUpper = target.toUpperCase();
         var cName = (container.name || "").toUpperCase();
-        var currentMatch = alreadyMatched || (cName.indexOf(tUpper) !== -1);
+        var currentMatch = alreadyMatched ||
+            (exactOnly ? (cName === tUpper) : (cName.indexOf(tUpper) !== -1));
 
         if (container.textFrames && container.textFrames.length > 0) {
             for (var k = 0; k < container.textFrames.length; k++) {
@@ -10523,7 +10651,9 @@ function runAutomation() {
                 var tfName = (tf.name || "").toUpperCase();
                 var tfCont = (tf.contents || "").toUpperCase();
                 
-                if (currentMatch || tfName.indexOf(tUpper) !== -1 || tfCont.indexOf(tUpper) !== -1) {
+                var nameHit = exactOnly ? (tfName === tUpper) : (tfName.indexOf(tUpper) !== -1);
+                var contentHit = exactOnly ? false : (tfCont.indexOf(tUpper) !== -1);
+                if (currentMatch || nameHit || contentHit) {
                     // EMPTY EXCEL CELL -> REMOVE THE PLACEHOLDER, do not blank it.
                     //
                     // A size with no name or no number is normal (a plain set
@@ -10816,7 +10946,7 @@ function runAutomation() {
 
         if (container.groupItems) {
             for (var g = 0; g < container.groupItems.length; g++) {
-                replaceInContainer(container.groupItems[g], target, value, currentMatch, root);
+                replaceInContainer(container.groupItems[g], target, value, currentMatch, root, exactOnly);
             }
         }
     }
