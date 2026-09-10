@@ -30,9 +30,9 @@ const MOCKUP_PARTS: Array<[string, string, string]> = [
   ["Placket", "Placket", "Only when the Placket checkbox is ticked."],
   ["Twill tape", "Twill Tape", "Only when the Twill Tape checkbox is ticked."],
   ["Tukdi", "Tukdi", "Only when the Tukdi checkbox is ticked."],
-  ["Hood, outer", "Outside Hood", "Hoodie only. Needs Left and Right child groups."],
-  ["Hood, inner", "Inside Hood", "Hoodie only. Needs Left and Right child groups."],
-  ["Hood border", "Border", "Hoodie only."],
+  ["Hood, outer", "Outside Hood", "Hoodie and Hoodie Jersey. Needs Left and Right child groups."],
+  ["Hood, inner", "Inside Hood", "Hoodie and Hoodie Jersey. Needs Left and Right child groups."],
+  ["Hood border", "Border", "Hoodie and Hoodie Jersey."],
 ];
 
 const MOCKUP_TEXT: Array<[string, string, string]> = [
@@ -96,9 +96,9 @@ const PATTERN_PARTS: Array<[string, string]> = [
   ["Sleeve", "XL Short Sleeve, XL Long Sleeve"],
   ["Sleeve when sides differ", "XL Left Sleeve, XL Right Sleeve"],
   ["Rib and cuff", "XL Rib & Cuff"],
-  ["Hood, Hoodie", "XL Hood, with Left and Right child groups"],
-  ["Pocket, Hoodie", "XL Pocket"],
-  ["Border, Hoodie", "XL Border"],
+  ["Hood, Hoodie and Hoodie Jersey", "XL Hood, with Left and Right child groups"],
+  ["Pocket, Hoodie only", "XL Pocket"],
+  ["Border, Hoodie and Hoodie Jersey", "XL Border"],
 ];
 
 const SIZE_WORDS: Array<[string, string, string]> = [
@@ -172,6 +172,19 @@ const OPTIONS: Array<{ name: string; does: string; needs: ReactNode; missing: st
       </>
     ),
     missing: "The job pauses before rendering and offers Continue without Hoodie parts.",
+  },
+  {
+    name: "Hoodie Jersey",
+    does: "The same garment as Hoodie without the pocket. Runs the normal Front, Back and Sleeve flow (short or long sleeve) and additionally builds Outside Hood, Inside Hood and Border. The neck piece is dropped, since it has a hood. No Pocket is built, so the Local Tag also keeps its normal position instead of being shifted clear of one, and no Rib & Cuff is added automatically. Cannot be combined with Hoodie - checking one clears the other.",
+    needs: (
+      <>
+        Pattern: <Name>{"{Size} Hood"}</Name> with <Name>Left</Name> and <Name>Right</Name>{" "}
+        children, and <Name>{"{Size} Border"}</Name> &mdash; no <Name>Pocket</Name> piece is
+        looked for. Mockup: <Name>Outside Hood</Name>, <Name>Inside Hood</Name> (each with Left
+        and Right children) and a <Name>Border</Name> design group.
+      </>
+    ),
+    missing: "The job pauses before rendering and offers Continue without Hoodie Jersey parts.",
   },
   {
     name: "Hood center design match",

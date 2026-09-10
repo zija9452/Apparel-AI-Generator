@@ -309,6 +309,13 @@ export default function UploadForm({
   const [fullButtonJerseyEnabled, setFullButtonJerseyEnabled] = useState(false);
   const [armholeMatchEnabled, setArmholeMatchEnabled] = useState(false);
   const [hoodieEnabled, setHoodieEnabled] = useState(false);
+  // Hoodie Jersey is the same garment without a Pocket, so an order is one or
+  // the other and never both. Kept mutually exclusive here rather than left to
+  // the backend: two checked boxes would silently render as one of them, and a
+  // form that shows a state the job cannot have is the wrong place to find out.
+  // Not radio buttons because "neither" (a normal jersey) is the default and
+  // has to stay reachable.
+  const [hoodieJerseyEnabled, setHoodieJerseyEnabled] = useState(false);
   const [picked, setPicked] = useState<Record<string, Picked>>({});
 
   const onPick = (key: string, files: FileList | null) => {
@@ -587,7 +594,7 @@ export default function UploadForm({
         <Section
           step="03"
           title="Garment type"
-          hint="Leave both off for a normal jersey. Each type adds its own pieces and its own matching options."
+          hint="Leave all off for a normal jersey. Each type adds its own pieces and its own matching options. Hoodie and Hoodie Jersey are the same garment with and without a pocket, so only one of the two can be on."
           icon={<Icon.Shirt className="h-4 w-4" />}
         >
           <div className="rounded-xl border border-line bg-surface p-4">
@@ -681,7 +688,11 @@ export default function UploadForm({
             name="hoodie"
             title="Hoodie"
             checked={hoodieEnabled}
-            onChange={(e) => setHoodieEnabled(e.target.checked)}
+            onChange={(e) => {
+              setHoodieEnabled(e.target.checked);
+              // One garment per order: turning this on clears Hoodie Jersey.
+              if (e.target.checked) setHoodieJerseyEnabled(false);
+            }}
             requires={
               <>
                 Pattern: a <Name>Hood</Name> group (with <Name>Left</Name>/<Name>Right</Name>{" "}
@@ -717,6 +728,58 @@ export default function UploadForm({
           >
             Runs the normal Front/Back/Sleeve flow and additionally builds Outside Hood, Inside
             Hood, Border and a Pocket.
+          </Toggle>
+
+          <Toggle
+            name="hoodie_jersey"
+            title="Hoodie Jersey"
+            badge="No pocket"
+            checked={hoodieJerseyEnabled}
+            onChange={(e) => {
+              setHoodieJerseyEnabled(e.target.checked);
+              // One garment per order: turning this on clears Hoodie.
+              if (e.target.checked) setHoodieEnabled(false);
+            }}
+            requires={
+              <>
+                Pattern: a <Name>Hood</Name> group (with <Name>Left</Name>/<Name>Right</Name>{" "}
+                children) and a <Name>Border</Name>. Mockup: <Name>Outside Hood</Name> /{" "}
+                <Name>Inside Hood</Name> groups (each with Left/Right children) and a Border
+                design group. <strong>No Pocket is needed</strong> in either file. Missing any of
+                the rest pauses the job before it starts.
+              </>
+            }
+            nested={
+              hoodieJerseyEnabled ? (
+                <Nested>
+                  <Toggle
+                    name="hoodie_jersey_center_design_match"
+                    title="Hood center design match"
+                    requires={
+                      <>
+                        In the mockup&apos;s <Name>Outside Hood</Name> group, name the shared
+                        design <Name>Center</Name> in <strong>both</strong> the Right and Left
+                        halves. The Right one is kept and re-centered across the seam. Missing
+                        either pauses the job. Inside Hood is not matched.
+                      </>
+                    }
+                  >
+                    Lines up a design that crosses the hood&apos;s center seam across the
+                    Outside Hood&apos;s two halves, using a <strong>19mm</strong> simulated
+                    sewing overlap (14mm sewing + the 5mm gap), the same for every size. The
+                    exported cut pieces keep the pattern&apos;s own shape and orientation.
+                  </Toggle>
+                </Nested>
+              ) : null
+            }
+          >
+            The same garment as Hoodie, without the pocket. Runs the normal Front/Back/Sleeve
+            flow &mdash; short or long sleeve &mdash; and additionally builds Outside Hood,
+            Inside Hood and Border. No Pocket is built, so the Local Tag also stays at its
+            normal position instead of being shifted clear of one. Like Hoodie, the neck panel
+            is dropped (the hood covers it) and sleeves default to long unless the Special
+            Instructions or the Excel <Name>Sleeve</Name> column say otherwise. Unlike Hoodie,
+            a Rib &amp; Cuff is <strong>not</strong> added automatically.
           </Toggle>
         </Section>
 

@@ -635,13 +635,19 @@ def _mockup_has_armhole_match_objects(app, mockup_ai_path):
         logger.warning(f"Could not scan '{os.path.basename(mockup_ai_path)}' for an armhole-match group: {e}")
         return True  # unreadable - don't block the job on a scan failure
 
-def _pattern_has_hoodie_objects(app, pattern_ai_path):
+def _pattern_has_hoodie_objects(app, pattern_ai_path, require_pocket=True):
     """True if the pattern file has, ANYWHERE in it, a group whose name
     contains "hood" with a "Left"/"Right" child inside it (either "Left
-    Hood"/"Hood Left"/"Left", or the "Right" equivalents), plus a "Pocket"
-    and a "Border" group. automate_production.jsx's HOODIE block only ever
-    looks for these by name (per size, e.g. "XL Hood") - without them the
-    Hoodie checkbox would silently do nothing for every size in the job.
+    Hood"/"Hood Left"/"Left", or the "Right" equivalents), plus a "Border"
+    group, plus - only when require_pocket - a "Pocket" group.
+    automate_production.jsx's HOODIE block only ever looks for these by name
+    (per size, e.g. "XL Hood") - without them the Hoodie checkbox would
+    silently do nothing for every size in the job.
+
+    require_pocket=False is the Hoodie Jersey: the same garment with no Pocket
+    piece (see HOODIE_POCKET_ON in automate_production.jsx). Demanding a
+    'Pocket' group there would pause every such job over a piece the order
+    deliberately never builds.
 
     Same MUST-go-through-Illustrator and zero-other-documents-open
     precondition as _mockup_has_center_object.
@@ -686,14 +692,20 @@ def _pattern_has_hoodie_objects(app, pattern_ai_path):
             "  }"
             "}"
             "huntSide(hoodGroup);"
-            "return (hasLeft && hasRight && hasPocket && hasBorder) ? 'yes' : 'no';"
+            # Baked in as a literal rather than read from a variable: this is a
+            # string handed to Illustrator, so the caller's Python bool has to
+            # become JS source. 'true'/'false' keeps the expression readable in
+            # a log if the probe ever needs dumping.
+            "var pocketOk = " + ("hasPocket" if require_pocket else "true") + ";"
+            "return (hasLeft && hasRight && pocketOk && hasBorder) ? 'yes' : 'no';"
             "} finally { doc.close(SaveOptions.DONOTSAVECHANGES); }"
             "})();"
         )
         result = app.DoJavaScript(probe)
         return str(result).strip() == "yes"
     except Exception as e:
-        logger.warning(f"Could not scan '{os.path.basename(pattern_ai_path)}' for Hoodie Hood/Pocket/Border groups: {e}")
+        needed = "Hood/Pocket/Border" if require_pocket else "Hood/Border"
+        logger.warning(f"Could not scan '{os.path.basename(pattern_ai_path)}' for Hoodie {needed} groups: {e}")
         return True  # unreadable - don't block the job on a scan failure
 
 def _mockup_has_hoodie_objects(app, mockup_ai_path):
@@ -878,6 +890,27 @@ def _norm_name(name):
     return re.sub(r"[^a-z0-9]", "", (name or "").lower())
 
 
+def _part_label_aliases(part_label):
+    """Mirror of partLabelAliases in scripts/automate_production.jsx.
+
+    The renderer accepts "XS SS"/"XS LS" for the sleeve panels as well as the
+    full words, so this must too - the comment inside _expected_pattern_pieces
+    says it plainly: a pre-flight stricter than the renderer refuses jobs that
+    would have rendered fine, which is worse than no pre-flight at all. Keep the
+    two lists identical.
+    """
+    p = (part_label or "").lower()
+    if p == "long sleeve":
+        return [part_label, "LS", "Full Sleeve", "Sleeve LS"]
+    if p == "short sleeve":
+        return [part_label, "SS", "Half Sleeve", "Sleeve SS"]
+    if p == "right sleeve":
+        return [part_label, "Sleeve Right", "SS Right", "Right SS", "LS Right", "Right LS"]
+    if p == "left sleeve":
+        return [part_label, "Sleeve Left", "SS Left", "Left SS", "LS Left", "Left LS"]
+    return [part_label]
+
+
 def _expected_pattern_pieces(plan_data):
     """Every panel name this plan will make the JSX look up in the pattern
     file, as (alternatives, description) pairs.
@@ -887,8 +920,11 @@ def _expected_pattern_pieces(plan_data):
     places the JSX itself picks between names rather than demanding one:
 
       - part_name "sleeve": resolvePartLabel probes "<Size> Short Sleeve",
-        then "<Size> Long Sleeve", then "<Size> Sleeve", and uses whichever
-        the pattern actually has.
+        then "<Size> Long Sleeve", then the "<Size> SS"/"<Size> LS"
+        abbreviations, then "<Size> Sleeve", and uses whichever the pattern
+        actually has. Every sleeve panel also answers to its abbreviation
+        (_part_label_aliases), so a piece named "XS LS" satisfies a
+        'sleeve-long' item.
       - a full-button "front": the JSX splits it into front-left/front-right
         ONLY when the mockup carries both designs (mockupHasBothFrontSides),
         otherwise the single "<Size> Front" panel is used. Both spellings are
@@ -1571,23 +1607,38 @@ def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mock
             return None
 
         # HOODIE pre-flight: same pattern as CENTER-MATCH above. Only
-        # relevant when the frontend's Hoodie checkbox is on (plan_data
-        # ["hoodie"], independent of full_button_jersey - see
-        # automate_production.jsx's HOODIE_ON gating). Checks BOTH the
-        # pattern (Hood/Left/Right/Pocket/Border) and the mockup (Outside
-        # Hood/Inside Hood/Left/Right/Border) since Hoodie needs named
-        # groups in both files, unlike the mockup-only checks above.
-        if (plan_data.get("hoodie")
+        # relevant when one of the frontend's two hooded-garment checkboxes is
+        # on (plan_data["hoodie"] or ["hoodie_jersey"], independent of
+        # full_button_jersey - see automate_production.jsx's HOODIE_ON
+        # gating). Checks BOTH the pattern (Hood/Left/Right/[Pocket]/Border)
+        # and the mockup (Outside Hood/Inside Hood/Left/Right/Border) since a
+        # hood needs named groups in both files, unlike the mockup-only checks
+        # above.
+        #
+        # A Hoodie Jersey builds no Pocket, so requiring a 'Pocket' group would
+        # pause every one of those jobs over a piece the order never makes -
+        # hence require_pocket, which follows the Pocket-carrying garment only.
+        # The mockup side is identical for both (no Pocket design there either
+        # way), so _mockup_has_hoodie_objects takes no such flag.
+        hoodie_on = bool(plan_data.get("hoodie"))
+        hoodie_jersey_on = bool(plan_data.get("hoodie_jersey"))
+        if ((hoodie_on or hoodie_jersey_on)
                 and not ignore_hoodie_warning
-                and (not _pattern_has_hoodie_objects(app, pattern_ai_path)
+                and (not _pattern_has_hoodie_objects(app, pattern_ai_path, require_pocket=hoodie_on)
                      or not _mockup_has_hoodie_objects(app, mockup_ai_path))):
-            logger.info("Automation paused: Hoodie is checked but the pattern/mockup is missing a required Hood/Pocket/Border/Outside Hood/Inside Hood group.")
+            garment = "Hoodie" if hoodie_on else "Hoodie Jersey"
+            pieces = "Hood/Pocket/Border" if hoodie_on else "Hood/Border"
+            logger.info(f"Automation paused: {garment} is checked but the pattern/mockup is missing a required {pieces}/Outside Hood/Inside Hood group.")
             with open(os.path.join(job_dir, "status.json"), "w") as f:
                 json.dump({
-                    "message": "Hoodie is checked, but the pattern or test print is missing a required Hood/Pocket/Border group - automation paused",
+                    "message": f"{garment} is checked, but the pattern or test print is missing a required {pieces} group - automation paused",
                     "progress": 29,
                     "is_ready": False,
                     "hoodie_layer_missing": True,
+                    # Which of the two garments asked, so the frontend's pause
+                    # card can name the exact groups it needs instead of
+                    # listing a Pocket that this order never builds.
+                    "hoodie_pocket_required": hoodie_on,
                 }, f)
             return None
 

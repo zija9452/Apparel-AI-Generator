@@ -237,6 +237,14 @@ export default function ProductionPlan({
     </button>
   );
 
+  // Hoodie and Hoodie Jersey share one pause flag (hoodie_layer_missing) because
+  // they are one garment and one pre-flight scan; only the Pocket separates
+  // them. Tested against `false` rather than truthiness so a status written
+  // before Hoodie Jersey existed - which carries no such key - still reads as
+  // the Hoodie it was.
+  const hoodiePocketRequired = status.hoodie_pocket_required !== false;
+  const hoodieGarment = hoodiePocketRequired ? "Hoodie" : "Hoodie Jersey";
+
   return (
     <div className="animate-fade-up mt-8 space-y-5 pb-12">
       <Panel className="overflow-hidden">
@@ -509,26 +517,37 @@ export default function ProductionPlan({
       {status.hoodie_layer_missing && (
         <Alert
           tone="warn"
-          title="Hoodie is checked, but a required layer is missing . Automation paused"
+          title={`${
+            hoodieGarment
+          } is checked, but a required layer is missing . Automation paused`}
           actions={
             <>
-              {continueButton("Continue without Hoodie parts")}
+              {continueButton(`Continue without ${hoodieGarment} parts`)}
               {stopButton}
             </>
           }
         >
           <p>
             Either the pattern file is missing a <Name>Hood</Name> group (with <Name>Left</Name>/
-            <Name>Right</Name> children), a <Name>Pocket</Name>, or a <Name>Border</Name>, or the
-            mockup is missing an <Name>Outside Hood</Name> / <Name>Inside Hood</Name> group (each
-            with Left/Right children) or a <Name>Border</Name> design group. Without these exact
-            names, the automation cannot build the Outside Hood, Inside Hood, Border or Pocket for
-            this job.
+            <Name>Right</Name> children)
+            {/* A Hoodie Jersey builds no Pocket, so the scan never asked for one -
+                naming it here would send the designer hunting for a piece this
+                order does not make. */}
+            {hoodiePocketRequired ? (
+              <>
+                , a <Name>Pocket</Name>,
+              </>
+            ) : null}{" "}
+            or a <Name>Border</Name>, or the mockup is missing an <Name>Outside Hood</Name> /{" "}
+            <Name>Inside Hood</Name> group (each with Left/Right children) or a{" "}
+            <Name>Border</Name> design group. Without these exact names, the automation cannot
+            build the Outside Hood, Inside Hood
+            {hoodiePocketRequired ? ", Border or Pocket" : " or Border"} for this job.
           </p>
           <p className="text-xs opacity-80">
             Recommended: open the pattern and mockup in Illustrator, add the missing group(s) with
             the exact names above, then upload a new job. Continuing renders the normal
-            Front/Back/Sleeve flow only, without any Hoodie parts.
+            Front/Back/Sleeve flow only, without any {hoodieGarment} parts.
           </p>
         </Alert>
       )}
@@ -553,9 +572,10 @@ export default function ProductionPlan({
           </p>
           <p className="text-xs opacity-80">
             Recommended: open the mockup in Illustrator, name the seam-crossing artwork in each
-            Outside Hood half as above, then upload a new job. Continuing builds the Hoodie
-            normally (Outside Hood, Inside Hood, Border and Pocket), but leaves the hood&apos;s
-            center design unmatched.
+            Outside Hood half as above, then upload a new job. Continuing builds the hooded
+            garment normally (Outside Hood, Inside Hood, Border, plus the Pocket if this is a
+            Hoodie rather than a Hoodie Jersey), but leaves the hood&apos;s center design
+            unmatched.
           </p>
         </Alert>
       )}

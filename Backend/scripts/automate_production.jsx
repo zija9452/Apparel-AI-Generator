@@ -432,7 +432,28 @@ function runAutomation() {
         // When ON, adds Outside Hood/Inside Hood/Border/Pocket on top of the
         // normal Front/Back/Sleeve flow - see the HOODIE-prefixed blocks
         // below for pre-flight validation and per-part construction.
-        var HOODIE_ON = (plan.hoodie === true);
+        //
+        // HOODIE JERSEY (plan.hoodie_jersey) is the SAME garment minus the
+        // Pocket: Front/Back, short or long Sleeve, Border and Hood
+        // (Left/Right, Outside + Inside). It deliberately reuses every
+        // hoodie* builder below rather than duplicating them - one garment
+        // differing by one piece is not two flows, and a second copy of
+        // ~1400 lines would drift the moment either side is fixed. The two
+        // checkboxes are mutually exclusive on the frontend and normalised
+        // again in main.py, so only one of these is ever true here.
+        var HOODIE_ON = (plan.hoodie === true || plan.hoodie_jersey === true);
+        // The ONE thing that separates the two: only a true Hoodie builds a
+        // Pocket. Every gate that exists solely because of the Pocket reads
+        // this flag, not HOODIE_ON - the Pocket build in buildHoodieExtras
+        // and the Local-Tag-vs-Pocket resolution in the main loop. Nothing
+        // else in the hoodie flow knows the difference.
+        var HOODIE_POCKET_ON = (plan.hoodie === true);
+        // Progress text only. Declared HERE, beside its two flags and above the
+        // main loop, because ExtendScript hoists the `var` but not the value:
+        // a constant declared below the loop reads `undefined` inside it and
+        // the status line would silently say "Building Hoodie parts
+        // (undefined)".
+        var HOODIE_PIECE_LIST = HOODIE_POCKET_ON ? "Hood/Border/Pocket" : "Hood/Border";
         // HOOD CENTER DESIGN MATCH: gated by its own frontend checkbox NESTED
         // under Hoodie (plan.hoodie_center_design_match, default OFF), so it
         // is ANDed with HOODIE_ON here rather than trusted on its own - a
@@ -1080,8 +1101,15 @@ function runAutomation() {
                 var patternFound = findPatternPanel(sizeLabel, partLabel, isAcc);
                 var patternObj = patternFound ? patternFound.obj : null;
                 if (!patternObj) {
-                    log("CRITICAL: Could not find '" + targetGroupName + "' in Master Pattern document (tried: " +
-                        sizeAliases(sizeLabel).join(", ") + "). Skipping.");
+                    // Names BOTH halves of the lookup. Listing only the size
+                    // aliases made this line actively misleading: job Hoodie
+                    // (2026-09-10) reported 'tried: XS, Adult XS, AXS' for a
+                    // pattern whose piece was called "XS LS", so the one thing
+                    // the reader needed - which PART spellings were probed - was
+                    // the one thing missing.
+                    log("CRITICAL: Could not find '" + targetGroupName + "' in Master Pattern document (tried sizes: " +
+                        sizeAliases(sizeLabel).join(", ") + " | tried names: " +
+                        partLabelAliases(partLabel).join(", ") + "). Skipping.");
                 }
 
                 if (patternObj) {
@@ -1699,7 +1727,14 @@ function runAutomation() {
                                                     // the Front is still unexported - the Pocket is built much
                                                     // later (buildHoodieExtras), far too late to affect either
                                                     // export. See hoodieResolveLocalTagVsPocket.
-                                                    hoodieResolveLocalTagVsPocket(sizeLabel, baseShape, localTagGroupRef);
+                                                    //
+                                                    // HOODIE JERSEY has no Pocket, so there is nothing for the
+                                                    // tag to collide with: skipping the check leaves the tag at
+                                                    // its natural 1.5in position instead of shifting it away
+                                                    // from a piece this garment never builds.
+                                                    if (HOODIE_POCKET_ON) {
+                                                        hoodieResolveLocalTagVsPocket(sizeLabel, baseShape, localTagGroupRef);
+                                                    }
                                                 }
                                             }
 
@@ -2086,7 +2121,7 @@ function runAutomation() {
             // processed, so it's always ready by the time we get here.
             if (HOODIE_ON && hoodieFrontBySize.hasOwnProperty(sizeLabel) && !hoodieFrontBySize[sizeLabel].built) {
                 try {
-                    updateStatus("Building Hoodie parts (Hood/Border/Pocket) for " + sizeLabel + "...", 90, false);
+                    updateStatus("Building Hoodie parts (" + HOODIE_PIECE_LIST + ") for " + sizeLabel + "...", 90, false);
                     buildHoodieExtras(sizeLabel, hoodieFrontBySize[sizeLabel]);
                 } catch (eHoodieInline) { log("HOODIE: error building extras for " + sizeLabel + ": " + eHoodieInline.message); }
                 hoodieFrontBySize[sizeLabel].built = true;
@@ -4001,7 +4036,7 @@ function runAutomation() {
             for (var hoodieSizeKey in hoodieFrontBySize) {
                 if (!hoodieFrontBySize.hasOwnProperty(hoodieSizeKey)) continue;
                 if (hoodieFrontBySize[hoodieSizeKey].built) continue;
-                updateStatus("Building Hoodie parts (Hood/Border/Pocket)...", 93, false);
+                updateStatus("Building Hoodie parts (" + HOODIE_PIECE_LIST + ")...", 93, false);
                 log("HOODIE: " + hoodieSizeKey + " wasn't built inline (no plain 'front' item in its size group) - building now as a fallback, may land out of size order.");
                 buildHoodieExtras(hoodieSizeKey, hoodieFrontBySize[hoodieSizeKey]);
                 hoodieFrontBySize[hoodieSizeKey].built = true;
@@ -4479,8 +4514,20 @@ function runAutomation() {
         }
         var partLabel = _partLabelMap[item.part_name] || item.part_name;
         if (item.part_name === "sleeve") {
+            // A bare "sleeve" item takes whichever length the pattern actually
+            // carries. The "SS"/"LS" probes sit between the full-word names and
+            // the generic "Sleeve" fallback, same order and same reasoning as
+            // partLabelAliases: a named length always beats an unnamed one.
+            //
+            // Resolves to the CANONICAL label, never "SS"/"LS" - findPatternPanel
+            // reaches the abbreviated piece through its own alias list, and the
+            // canonical name is what feeds the height cache, the instance names,
+            // the artboard names and the logs (see targetGroupName's note in the
+            // main loop).
             if (findAnywhere(patternDoc, sizeLabel + " Short Sleeve")) partLabel = "Short Sleeve";
             else if (findAnywhere(patternDoc, sizeLabel + " Long Sleeve")) partLabel = "Long Sleeve";
+            else if (findAnywhere(patternDoc, sizeLabel + " SS")) partLabel = "Short Sleeve";
+            else if (findAnywhere(patternDoc, sizeLabel + " LS")) partLabel = "Long Sleeve";
             else if (findAnywhere(patternDoc, sizeLabel + " Sleeve")) partLabel = "Sleeve";
         }
         return partLabel;
@@ -4496,7 +4543,10 @@ function runAutomation() {
     //   - Rib & Cuff and the second sleeve of a stacked pair are counted as
     //     ordinary row items (they really consume no row of their own),
     //   - HOODIE adds two spare rows for the Hood/Border/Pocket extras that
-    //     are built after this size's plan items,
+    //     are built after this size's plan items. A Hoodie Jersey builds one
+    //     piece fewer (no Pocket) and still reserves the same two rows -
+    //     over-reserving is the safe direction here, and the Hood pair is
+    //     what actually drives the height either way,
     //   - the size-group label's own height is included.
     function estimateSizeGroupHeight(group, sizeLabel) {
         try {
@@ -11374,18 +11424,61 @@ function runAutomation() {
     // spelling that actually matched, so everything downstream (logs, the
     // height cache, SLEEVE-MATCH scoping) keeps using the real panel's name
     // rather than the one we guessed first.
+    // The PART half of a pattern lookup, exactly as sizeAliases is the SIZE half.
+    //
+    // The mockup side has accepted "SS"/"LS" for a long time (see getSourceView's
+    // abbreviation block), the pattern side never did - it only ever probed the
+    // one full-word label. A designer who names the mockup group "LS" reasonably
+    // names the pattern piece "XS LS" too, and that piece was then skipped
+    // outright: job Hoodie (2026-09-10) logged "Could not find 'XS Long Sleeve'
+    // (tried: XS, Adult XS, AXS)" and shipped an order with no sleeve in it at
+    // all. The two sides now understand the same spellings.
+    //
+    // LENGTH-AWARE, and deliberately STRICTER than the mockup side: an
+    // abbreviation only ever expands to its own length, and there is no bare
+    // "Sleeve" fallback here. The mockup's full-word list happily tries
+    // "Short Sleeve" for a long-sleeve item because picking the wrong DESIGN is
+    // a visible mistake somebody catches on screen; cutting a long sleeve from a
+    // short-sleeve PATTERN piece is fabric in the bin. Guessing is worth less
+    // than the CRITICAL line that says the piece was not found.
+    //
+    // ORDERING: the canonical full-word name is always first. Combined with the
+    // loop order in findPatternPanel below, that means every pattern which
+    // resolves today resolves to the identical piece - the abbreviations are
+    // only ever reached after the full name has failed against every size alias.
+    function partLabelAliases(partLabel) {
+        var p = (partLabel || "").toLowerCase();
+        if (p === "long sleeve")  return [partLabel, "LS", "Full Sleeve", "Sleeve LS"];
+        if (p === "short sleeve") return [partLabel, "SS", "Half Sleeve", "Sleeve SS"];
+        // Per-side sleeves (the item was expanded by mockupHasBothSleeveSides).
+        // The SIDE is what identifies these and a pattern rarely repeats the
+        // length on them, so both abbreviations are offered on each side.
+        if (p === "right sleeve") return [partLabel, "Sleeve Right", "SS Right", "Right SS", "LS Right", "Right LS"];
+        if (p === "left sleeve")  return [partLabel, "Sleeve Left", "SS Left", "Left SS", "LS Left", "Left LS"];
+        return [partLabel];
+    }
+
     function findPatternPanel(sizeLabel, partLabel, isAcc) {
         if (isAcc || sizeLabel === "Universal") {
             var accObj = findAnywhere(patternDoc, partLabel);
             return accObj ? { obj: accObj, name: partLabel } : null;
         }
         var alts = sizeAliases(sizeLabel);
-        for (var i = 0; i < alts.length; i++) {
-            var nm = alts[i] + " " + partLabel;
-            var found = findAnywhere(patternDoc, nm);
-            if (found) {
-                if (i > 0) log("SIZE NAME: pattern calls this piece '" + nm + "' (the order says '" + sizeLabel + "') - matched by alias.");
-                return { obj: found, name: nm };
+        var parts = partLabelAliases(partLabel);
+        // PART outer, SIZE inner: the canonical part name is exhausted against
+        // every size spelling before any abbreviation is tried. That ordering is
+        // what keeps this change invisible to every pattern that already works.
+        for (var p = 0; p < parts.length; p++) {
+            for (var i = 0; i < alts.length; i++) {
+                var nm = alts[i] + " " + parts[p];
+                var found = findAnywhere(patternDoc, nm);
+                if (found) {
+                    if (i > 0 || p > 0) {
+                        log("PATTERN NAME: pattern calls this piece '" + nm + "' (the order asked for '" +
+                            sizeLabel + " " + partLabel + "') - matched by alias.");
+                    }
+                    return { obj: found, name: nm };
+                }
             }
         }
         return null;
@@ -11488,8 +11581,38 @@ function runAutomation() {
         // choice as every panel in the main loop. No full-button shared-% layer
         // here - that one is about keeping Front-Left/Front-Right/Back consistent
         // across the placket seam, which these pieces have nothing to do with.
-        if (SCALE_HEIGHT_ONLY) pmAlignAndScaleToHeight(pastedDesign, baseShape, null);
-        else alignAndScale(pastedDesign, baseShape, true, false, false, null);
+        //
+        // SCALE REFERENCE: the design's own 'base-path', exactly as the main loop
+        // does it (search "designBasePath"). This used to pass null, and null is
+        // not "no preference" - pmAlignAndScaleToHeight reads
+        // `var ref = referenceItem || obj`, so the scale was measured against the
+        // WHOLE pasted group instead of the base-path rectangle.
+        //
+        // That is not a small difference. base-path is the mockup's garment
+        // silhouette; the artwork on it is routinely drawn OVER the edges so the
+        // panel is fully covered. Measuring the group therefore divides by the
+        // artwork's overhanging height rather than the silhouette's, so
+        // scale = panelH / (something too tall) and the design lands too SMALL,
+        // with the panel's flat colour showing around it. Reported on job
+        // Testing_Hoodie (2026-09-10): the Outside Hood's marble image came out
+        // far smaller than the same artwork on the Front, which was measuring its
+        // base-path correctly all along.
+        //
+        // findPlacementPath may return null (Inside Hood and Border carry no
+        // artwork at all on some mockups). null then falls back to the group
+        // bounds inside pmAlignAndScaleToHeight - i.e. exactly the old behaviour -
+        // which is the same two-branch outcome the main loop has.
+        log("Calculating Alignment & Scaling for " + warnPrefix + "...");
+        var hoodBasePath = findPlacementPath(pastedDesign, true);
+        if (!hoodBasePath) log("   - no 'base-path' in this design - scaling against the whole group, same as the main loop's no-reference branch.");
+        var hoodScale = SCALE_HEIGHT_ONLY
+            ? pmAlignAndScaleToHeight(pastedDesign, baseShape, hoodBasePath)
+            : alignAndScale(pastedDesign, baseShape, true, false, false, hoodBasePath);
+        // The hood/border scale % was never logged, so "the image is too small"
+        // could not be checked against a number from debug_log.txt alone.
+        if (hoodScale && hoodScale.sh) {
+            log("   - " + warnPrefix + ": design scaled to " + (Math.round(hoodScale.sh * 10) / 10) + "% of its mockup size.");
+        }
 
         // BASE-PATH REMOVAL: the main per-item loop deletes the design's own
         // 'base-path' right after scaling (search "removeBasePaths(pastedDesign"),
@@ -12448,6 +12571,22 @@ function runAutomation() {
     // only the frontmost would leave the other one under the design.
     // Direct children only - the tag is always a child of the clipping group
     // itself, and going deeper risks selecting text that belongs to artwork.
+    // One shape's own flat fill, read the way getDesignBaseFill's inner fillOf
+    // reads it. A CompoundPathItem's `fillColor` is a documented false positive -
+    // it reads back plausibly while painting nothing - so the colour has to come
+    // off a member path instead. Used to copy the Front's panel colour onto the
+    // Pocket outline; returns null when there is nothing solid to copy.
+    function hoodieShapeFill(shape) {
+        try {
+            if (shape.typename === "CompoundPathItem") {
+                var p = (shape.pathItems && shape.pathItems.length) ? shape.pathItems[0] : null;
+                return (p && p.filled) ? p.fillColor : null;
+            }
+            if (shape.filled) return shape.fillColor;
+        } catch (e) {}
+        return null;
+    }
+
     function hoodiePocketBackmostLabel(host, skipItem) {
         var found = null;
         try {
@@ -12595,16 +12734,47 @@ function runAutomation() {
         // Verified side by side on the real pattern: pasteBack gave Small 26.9%
         // / XL 27.4% white WITH the tag visible; the DOM route gave the same
         // silhouette but no tag at all.
+        // PANEL COLOUR: painted onto the Pocket's OWN outline, not carried in on a
+        // duplicate of the Front's base shape.
+        //
+        // Both routes below used to duplicate frontState.baseShape in purely to
+        // supply the flat panel colour. That base shape is ALSO the Front's own
+        // clipping mask, so the copy landed in the pocket as a second
+        // <Clipping Path> - a jersey-silhouette path sitting inside the pocket
+        // group next to the pocket's real mask (reported with a screenshot of the
+        // Layers panel, job Hoodie 2026-09-10). Where the pocket's clip did not
+        // hold it, it painted a white jersey shape across the artboard; the JPEG
+        // only escaped because the artboard is fitted to the pocket.
+        //
+        // Filling the piece's own placement path is how EVERY other panel gets its
+        // colour (search "Panel base filled from design" for the main loop, and
+        // hoodiePasteDesign for Hood/Border) - the duplicate was the odd one out.
+        // The mask stays a separate duplicate of this same path, exactly as the
+        // main loop does it, so one path carries the colour and one carries the
+        // clip instead of three paths carrying two jobs between them.
+        //
+        // This also removes the white-fill problem the Paste-in-Back note below
+        // records: the outline is no longer left at the pattern's own white.
+        var frontFill = hoodieShapeFill(frontState.baseShape);
+        if (frontFill) {
+            var pocketFillHow = fillShapeSolid(pocketBaseShape, frontFill);
+            log("HOODIE: " + sizeLabel + " Pocket - panel colour taken from Front onto the piece's own outline (" + pocketFillHow + ").");
+        } else {
+            hoodieWarnings.push(sizeLabel + " Pocket: could not read the Front's panel colour - the piece keeps the pattern's own fill.");
+        }
+
         var clipGroup = null, pastedBehindLabel = false;
         var labelAnchor = hoodiePocketBackmostLabel(clipHost, pocketBaseShape);
         if (labelAnchor) {
             var stageGroup = null;
             try {
-                // One group holding exactly what Ctrl+B should paste: the
-                // Front's finished base colour with its design on top.
+                // One group holding exactly what Ctrl+B should paste: the Front's
+                // design. The base colour is NOT in here any more - it is already
+                // on the pocket's own outline (see the panel-colour block above),
+                // so pasting a copy of the Front's base shape would only add the
+                // duplicate <Clipping Path> this change exists to remove.
                 stageGroup = orderDoc.groupItems.add();
                 stageGroup.name = "design_clip_group"; // the name is how we find it again after the paste
-                frontState.baseShape.duplicate(stageGroup, ElementPlacement.PLACEATEND);
                 frontState.pastedDesign.duplicate(stageGroup, ElementPlacement.PLACEATBEGINNING);
 
                 app.activeDocument = orderDoc;
@@ -12649,19 +12819,20 @@ function runAutomation() {
             // lifted back over it. Same finished stacking, reached without the
             // clipboard - used when there is no label to paste behind, or when
             // the menu command did not give back exactly what we expect.
-            var clipShape, frontColorCopy, frontDesignCopy;
+            // Two items only: the mask and the design. The Front's base shape used
+            // to be duplicated in here as a third - see the panel-colour block
+            // above for why it is gone and where the colour comes from now.
+            var clipShape, frontDesignCopy;
             try {
                 clipShape = pocketBaseShape.duplicate(clipHost, ElementPlacement.PLACEATBEGINNING);
-                frontColorCopy = frontState.baseShape.duplicate(clipHost, ElementPlacement.PLACEATBEGINNING);
                 frontDesignCopy = frontState.pastedDesign.duplicate(clipHost, ElementPlacement.PLACEATBEGINNING);
             // PARM goes up to buildHoodiePieceWithRollback, which rebuilds this piece.
             } catch (eClipDup) {
                 parmBail(eClipDup, "duplicating the Front design for the Pocket clip");
-                hoodieWarnings.push(sizeLabel + " Pocket: could not duplicate Front's color/design for clipping - " + eClipDup.message); return;
+                hoodieWarnings.push(sizeLabel + " Pocket: could not duplicate Front's design for clipping - " + eClipDup.message); return;
             }
             clipGroup = clipHost.groupItems.add();
             clipGroup.name = "design_clip_group";
-            frontColorCopy.moveToBeginning(clipGroup);
             frontDesignCopy.moveToBeginning(clipGroup);
             clipShape.moveToBeginning(clipGroup); // topmost - acts as the clip mask
             clipGroup.moveToBeginning(clipHost);  // inside the group that carries the mask
@@ -12681,11 +12852,14 @@ function runAutomation() {
         }
         // Reading .visibleBounds straight after re-parenting artwork into a
         // clipping group in a busy orderDoc can report stale bounds (the
-        // un-clipped extent of the largest child - here frontColorCopy, which is
-        // Front's FULL body silhouette) instead of the true clipped-down pocket
+        // un-clipped extent of the largest child - the duplicated Front DESIGN,
+        // which spans Front's whole body) instead of the true clipped-down pocket
         // size - same trap documented in pmPeekFullButtonScale above (a real job
-        // once got a wildly wrong measurement this exact way). Force a redraw
-        // before anything below reads bounds off pocketFinal.
+        // once got a wildly wrong measurement this exact way). The Front base
+        // shape that used to be the biggest child here is gone (see the
+        // panel-colour block above), but the design copy is just as oversized, so
+        // the trap is unchanged. Force a redraw before anything below reads
+        // bounds off pocketFinal.
         try { app.redraw(); } catch (eRdPocket) {}
 
         // clipGroup is already nested inside dupPocket (on top, inside the
@@ -12697,8 +12871,8 @@ function runAutomation() {
         //
         // NOT pocketFinal.visibleBounds here - reading bounds through the
         // just-clipped group can still report the pre-clip extent of its
-        // largest duplicated child (frontColorCopy = Front's FULL body
-        // silhouette) even after redraw, on a real job (confirmed: exported
+        // largest duplicated child (frontDesignCopy = Front's full-body
+        // design) even after redraw, on a real job (confirmed: exported
         // artboard came out shoulder-to-hem tall, matching Front's height,
         // with the actual pocket-shaped design sitting in a fraction of it -
         // same trap the comment above already warns about, redraw alone
@@ -12775,13 +12949,18 @@ function runAutomation() {
             });
         }
 
-        var pocketPiece = findAnywhere(patternDoc, sizeLabel + " Pocket");
-        if (!pocketPiece) {
-            hoodieWarnings.push(sizeLabel + ": no 'Pocket' group found in pattern - Pocket skipped.");
-        } else {
-            buildHoodiePieceWithRollback(sizeLabel, "Pocket", function () {
-                hoodieBuildPocket(pocketPiece, sizeLabel, frontState);
-            });
+        // POCKET: Hoodie only. A Hoodie Jersey is this same garment without
+        // one, so it must not warn about a missing 'Pocket' group either -
+        // the piece is not missing, it is not part of the order.
+        if (HOODIE_POCKET_ON) {
+            var pocketPiece = findAnywhere(patternDoc, sizeLabel + " Pocket");
+            if (!pocketPiece) {
+                hoodieWarnings.push(sizeLabel + ": no 'Pocket' group found in pattern - Pocket skipped.");
+            } else {
+                buildHoodiePieceWithRollback(sizeLabel, "Pocket", function () {
+                    hoodieBuildPocket(pocketPiece, sizeLabel, frontState);
+                });
+            }
         }
     }
 }

@@ -82,7 +82,12 @@ const STEPS = [
 const HANDLES = [
   {
     title: "Garment types",
-    items: ["Normal jersey", "Full Button Jersey with Patti", "Hoodie with hood, border and pocket"],
+    items: [
+      "Normal jersey",
+      "Full Button Jersey with Patti",
+      "Hoodie with hood, border and pocket",
+      "Hoodie Jersey - the same, without the pocket",
+    ],
   },
   {
     title: "Matching options",

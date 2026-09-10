@@ -577,9 +577,12 @@ def _enforce_sleeve_length(plan_dict: Dict[str, Any], raw_orders: List[Dict[str,
     Instructions sets the MODE for the whole job:
       - mentions 'long'/'full' only -> every sleeve item becomes 'sleeve-long'.
       - mentions 'short'/'half' only -> every sleeve item becomes 'sleeve-short'.
-      - mentions neither -> defaults to 'sleeve-long' for Hoodie jobs (hoodies
-        are worn full-sleeve), otherwise 'sleeve-short' (matches the old LLM
-        default for non-hoodie jobs).
+      - mentions neither -> defaults to 'sleeve-long' for hooded jobs (both
+        Hoodie and Hoodie Jersey - hoodies are worn full-sleeve), otherwise
+        'sleeve-short' (matches the old LLM default for non-hoodie jobs).
+        Either way this is only the DEFAULT: 'half'/'short' in the
+        instructions, or a per-row Sleeve column when both are mentioned,
+        still decides.
       - mentions BOTH (an order genuinely mixes short- and long-sleeve
         jerseys) -> per-row Excel 'Sleeve' column (Half/Full) decides: the
         deduped sleeve item for that size is split into 'sleeve-short' +
@@ -648,7 +651,8 @@ def _enforce_sleeve_length(plan_dict: Dict[str, Any], raw_orders: List[Dict[str,
 def _enforce_hoodie_neck(plan_dict: Dict[str, Any], hoodie: bool) -> None:
     """Hoodies have no neckline (the Hood covers it) - the LLM still emits a
     'neck' item per its Rule 4 default part list since it isn't hoodie-aware.
-    Strip it whenever the Hoodie checkbox is on. Must run before
+    Strip it whenever EITHER hooded garment is on (Hoodie or Hoodie Jersey -
+    the caller passes `hoodie or hoodie_jersey`). Must run before
     _enforce_extra_logos so a 'Neck Logo' Excel column never gets attached to
     a part that's about to be dropped."""
     if not hoodie:
@@ -906,6 +910,8 @@ def job_options(
     front_back_stripes_match: bool = Form(False),
     hoodie: bool = Form(False),
     hoodie_center_design_match: bool = Form(False),
+    hoodie_jersey: bool = Form(False),
+    hoodie_jersey_center_design_match: bool = Form(False),
     team_name_scale: bool = Form(False),
     design_scale_mode: str = Form("height"),
     export_mode: str = Form("ai_jpg"),
@@ -931,6 +937,8 @@ def job_options(
         "front_back_stripes_match": front_back_stripes_match,
         "hoodie": hoodie,
         "hoodie_center_design_match": hoodie_center_design_match,
+        "hoodie_jersey": hoodie_jersey,
+        "hoodie_jersey_center_design_match": hoodie_jersey_center_design_match,
         "team_name_scale": team_name_scale,
         "design_scale_mode": design_scale_mode,
         "export_mode": export_mode,
@@ -974,17 +982,34 @@ async def _build_plan(
         ]
 
     hoodie = bool(opt["hoodie"])
+    # HOODIE JERSEY: the same garment as Hoodie minus the Pocket. The two
+    # checkboxes are mutually exclusive on the form (checking one clears the
+    # other), so both arriving true means a hand-written or replayed request
+    # rather than a real submission. Normalise it here instead of letting it
+    # reach the JSX, where 'hoodie' would win silently anyway: the fuller
+    # garment is the safe reading, and the log says which one ran.
+    hoodie_jersey = bool(opt["hoodie_jersey"])
+    if hoodie and hoodie_jersey:
+        logger.warning(
+            "Both 'hoodie' and 'hoodie_jersey' were sent - they are mutually exclusive. "
+            "Treating this as a Hoodie (with Pocket) and ignoring hoodie_jersey."
+        )
+        hoodie_jersey = False
+    # Everything the two garments SHARE reads this, not `hoodie`: no neckline
+    # (the hood covers it), and full sleeves by default. The Pocket is the one
+    # difference, and it lives entirely in the JSX (HOODIE_POCKET_ON).
+    any_hood = hoodie or hoodie_jersey
 
     # Excel rows are the source of truth for per-jersey names/numbers; fix any
     # personalization the LLM collapsed into quantity buckets.
     plan_dict = final_plan.dict()
     _enforce_personalization(plan_dict, excel_data.get("raw_orders", []))
     _dedupe_unpersonalized(plan_dict)
-    _enforce_hoodie_neck(plan_dict, hoodie)
+    _enforce_hoodie_neck(plan_dict, any_hood)
     # Straight after the hoodie strip, and BEFORE _enforce_extra_logos: a
     # 'Neck Logo' column has to find a neck item to attach itself to.
-    _enforce_neck(plan_dict, hoodie)
-    _enforce_sleeve_length(plan_dict, excel_data.get("raw_orders", []), user_instructions, is_hoodie=hoodie)
+    _enforce_neck(plan_dict, any_hood)
+    _enforce_sleeve_length(plan_dict, excel_data.get("raw_orders", []), user_instructions, is_hoodie=any_hood)
     _enforce_extra_logos(plan_dict, excel_data.get("raw_orders", []))
 
     # Accessories are checkbox-driven: enforced in code, never trusted to the LLM.
@@ -1002,6 +1027,10 @@ async def _build_plan(
     _enforce_full_button_patti(plan_dict, opt["full_button_jersey"])
 
     # Hoodie: one Rib & Cuff item per size (same ordering requirement as Patti).
+    # Deliberately `hoodie` and NOT `any_hood`: a Hoodie Jersey does not get a
+    # Rib & Cuff auto-added, per explicit instruction. If an order needs one,
+    # the pattern piece is still reachable the normal way - this only decides
+    # what is added without being asked for.
     _enforce_hoodie_rib_cuff(plan_dict, hoodie)
 
     plan_dict["match_sleeve_to_side"] = bool(opt["match_sleeve_to_side"])
@@ -1052,10 +1081,21 @@ async def _build_plan(
         opt["export_mode"] if opt["export_mode"] in ("ai_jpg", "ai_only") else "ai_jpg"
     )
     plan_dict["hoodie"] = hoodie
-    # Nested under Hoodie on the frontend, so ANDed with it here too: the
+    # HOODIE JERSEY: Hoodie without the Pocket. The JSX turns the whole hoodie
+    # flow on for either flag and gates only the Pocket on `hoodie` itself.
+    plan_dict["hoodie_jersey"] = hoodie_jersey
+    # Nested under its garment on the frontend, so ANDed with it here too: the
     # checkbox stays checked in the DOM if the user ticks it and then unticks
-    # Hoodie, and a lone flag would otherwise pause a job that has no hood.
-    plan_dict["hoodie_center_design_match"] = bool(hoodie and opt["hoodie_center_design_match"])
+    # the garment, and a lone flag would otherwise pause a job that has no hood.
+    #
+    # Both garments' nested checkboxes collapse into this ONE key because the
+    # feature itself is identical - it works on the Outside Hood's Left/Right
+    # halves, which both garments have. The JSX and the pre-flight scan
+    # therefore need no notion of which garment asked for it.
+    plan_dict["hoodie_center_design_match"] = bool(
+        (hoodie and opt["hoodie_center_design_match"])
+        or (hoodie_jersey and opt["hoodie_jersey_center_design_match"])
+    )
     # Job-wide, deliberately NOT gated on garment type. "height" (default,
     # uniform), "height_sides" (adds SIDE-ANCHOR), "both" (two-axis stretch, no
     # longer offered on the form but still honoured for re-running old plans).

@@ -29,7 +29,14 @@ export type JobStatus = {
   local_tag_missing?: boolean;
   side_seam_match_layer_missing?: boolean;
   armhole_match_layer_missing?: boolean;
+  /** Shared by the Hoodie and Hoodie Jersey checkboxes - they are the same
+   *  garment and the same pre-flight scan. */
   hoodie_layer_missing?: boolean;
+  /** Which of the two asked: true = Hoodie (a 'Pocket' group was required),
+   *  false = Hoodie Jersey (it was not). Only meaningful alongside
+   *  hoodie_layer_missing, and absent on statuses written before this
+   *  garment existed - the pause card reads that as the Hoodie wording. */
+  hoodie_pocket_required?: boolean;
   hood_center_match_layer_missing?: boolean;
   /** Panel names the order asks for that the pattern file does not contain.
    *  Unlike the flags above this one is not tied to a checkbox - it fires on
