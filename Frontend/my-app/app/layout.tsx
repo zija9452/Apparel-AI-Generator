@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AI Apparel Production Orchestrator",
+  title: "JnS Apparel Production Orchestrator",
   description:
     "Turn an order sheet, a mockup and a master pattern into print-ready Illustrator files.",
 };
