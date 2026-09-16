@@ -80,7 +80,7 @@ export default function Orchestrator() {
                   {STEPS.map((s) => (
                     <li key={s.step} className="relative">
                       <span
-                        className="absolute -left-[34px] flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-brand to-accent text-white shadow-[var(--shadow-soft)]"
+                        className="absolute -left-8.5 flex h-7 w-7 items-center justify-center rounded-lg bg-linear-to-br from-brand to-accent text-white shadow-(--shadow-soft)"
                       >
                         {s.icon}
                       </span>
@@ -96,9 +96,9 @@ export default function Orchestrator() {
 
               <Link
                 href="/docs"
-                className="group flex items-start gap-3 rounded-2xl border border-line bg-surface p-4 shadow-[var(--shadow-soft)] transition-colors hover:border-brand/50"
+                className="group flex items-start gap-3 rounded-2xl border border-line bg-surface p-4 shadow-(--shadow-soft) transition-colors hover:border-brand/50"
               >
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-brand to-accent text-white">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-linear-to-br from-brand to-accent text-white">
                   <Icon.Book className="h-4 w-4" />
                 </span>
                 <span>
@@ -114,7 +114,7 @@ export default function Orchestrator() {
 
               <Link
                 href="/order-guide"
-                className="group flex items-start gap-3 rounded-2xl border border-line bg-surface p-4 shadow-[var(--shadow-soft)] transition-colors hover:border-brand/50"
+                className="group flex items-start gap-3 rounded-2xl border border-line bg-surface p-4 shadow-(--shadow-soft) transition-colors hover:border-brand/50"
               >
                 <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-linear-to-br from-brand to-accent text-white">
                   <Icon.Book className="h-4 w-4" />

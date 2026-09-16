@@ -25,12 +25,17 @@ from services.excel_service import parse_order_excel
 # deployed instance answers 404 rather than pretending to accept a job it can
 # never run.
 try:
-    from services.illustrator_automation import run_illustrator_automation, update_status
+    from services.illustrator_automation import (
+        run_illustrator_automation,
+        update_status,
+        pattern_files_needed,
+    )
     ILLUSTRATOR_AVAILABLE = True
 except ImportError:  # no pywin32 / not Windows
     ILLUSTRATOR_AVAILABLE = False
     run_illustrator_automation = None  # type: ignore[assignment]
     update_status = None  # type: ignore[assignment]
+    pattern_files_needed = None  # type: ignore[assignment]
 
 # OpenAI Agents SDK imports
 from agents import (
@@ -320,22 +325,59 @@ def _size_code(s: str) -> Optional[str]:
     return s if s in _SIZE_SEQUENCE else None
 
 
+# Infant month (1M..12M) and toddler (1T..10T) sizes, in EITHER word order -
+# "6M", "6 Months", "Month 6", "4T", "Toddler 4", "4 Toddler". Matched against
+# the already-normalised body (lowercased, spaces/dashes/dots removed), so the
+# word forms arrive here glued together.
+#
+# The number is captured because these two families sort NUMERICALLY: a string
+# sort puts "10m" before "2m", which would ship the ladder out of order.
+# Neither pattern can collide with an adult size - no adult code is digits
+# followed by a bare 'm' or 't'.
+_MONTH_RE = re.compile(r"^(?:(?:months?|mos?|infant|baby)([0-9]+)|([0-9]+)(?:m|mo|months?))$")
+_TODDLER_RE = re.compile(r"^(?:toddler([0-9]+)t?|([0-9]+)(?:t|toddler))$")
+
+
+def _infant_rank(size_body: str):
+    """(family, number) for a month/toddler size, else None.
+    family: 0 = infant months, 1 = toddler - the two smallest families, ranked
+    below youth in _size_rank."""
+    m = _MONTH_RE.match(size_body)
+    if m:
+        return 0, float(m.group(1) or m.group(2))
+    m = _TODDLER_RE.match(size_body)
+    if m:
+        return 1, float(m.group(1) or m.group(2))
+    return None
+
+
 def _size_rank(size: str):
     """Sort key for one production group's size, smallest print run first:
-      0 = youth (YXS..YXL, 'Youth Medium')
-      1 = adult (XS..6XL, with or without the 'A' prefix some sheets use)
-      2 = anything unrecognised - numeric sizes ('38', '40') in numeric order,
+      0 = infant months (1M..12M, '6 Months'), in NUMERIC order
+      1 = toddler (1T..10T, 'Toddler 4'), in NUMERIC order
+      2 = youth (YXS..YXL, 'Youth Medium')
+      3 = adult (XS..6XL, with or without the 'A' prefix some sheets use)
+      4 = anything unrecognised - numeric sizes ('38', '40') in numeric order,
           the rest alphabetically, all AFTER every known size
-      3 = the 'Universal' accessories group, always dead last
+      5 = the 'Universal' accessories group, always dead last
+      6 = an empty size cell, after even that
+
+    Toddlers used to land in bucket 4 and months were not understood at all:
+    neither _size_code nor the 'y'/'a' prefix rules read them, so float('4t')
+    raised and every toddler sorted AFTER the adult sizes - the smallest
+    garments in the order rendering last. Worse for the youth/adult pattern
+    split, that made the file sequence interleave (youth -> adult -> youth)
+    instead of running youth-then-adult once.
+
     A size the order simply doesn't contain has no group at all, so the next
     size up follows it - nothing needs to be skipped explicitly."""
     s = str(size or "").lower().strip()
     for ch in (" ", "-", "_", "."):
         s = s.replace(ch, "")
     if not s:
-        return (4, 0.0, "")
+        return (6, 0.0, "")
     if s == "universal":
-        return (3, 0.0, "")
+        return (5, 0.0, "")
 
     youth = False
     body = s
@@ -343,6 +385,12 @@ def _size_rank(size: str):
         youth, body = True, body[5:]
     elif body.startswith("adult"):
         body = body[5:]
+
+    # Months and toddlers are checked FIRST: they are numeric families with
+    # their own ladders, and none of the code/prefix rules below can read them.
+    infant = _infant_rank(body)
+    if infant is not None:
+        return (infant[0], infant[1], "")
 
     code = _size_code(body)
     # Single-letter prefixes: 'Y' = youth (YM), 'A' = adult (AM = M). Only
@@ -356,12 +404,12 @@ def _size_rank(size: str):
         code = _size_code(body[1:])
 
     if code is not None:
-        return (0 if youth else 1, float(_SIZE_SEQUENCE.index(code)), "")
+        return (2 if youth else 3, float(_SIZE_SEQUENCE.index(code)), "")
 
     try:
-        return (2, float(body), "")
+        return (4, float(body), "")
     except ValueError:
-        return (2, float("inf"), s)
+        return (4, float("inf"), s)
 
 
 def _sort_size_groups(plan: Dict[str, Any]) -> None:
@@ -1200,7 +1248,11 @@ async def upload_files(
     background_tasks: BackgroundTasks,
     excel_file: UploadFile = File(...),
     mockup_ai: UploadFile = File(...),
-    pattern_ai: UploadFile = File(...),
+    # NEITHER pattern file is required on its own: an order can be adult-only,
+    # youth-only, or both. Which ones this order needs is derived from the
+    # plan's own sizes once it is built - see pattern_files_needed below.
+    pattern_ai: Optional[UploadFile] = File(None),
+    pattern_youth_ai: Optional[UploadFile] = File(None),
     logo_library_ai: Optional[UploadFile] = File(None),
     fonts: List[UploadFile] = File([]),
     # Names the job everywhere: uploads/<job_name>/ holds the uploads, the
@@ -1220,9 +1272,27 @@ async def upload_files(
     job_id, job_dir = _unique_job_dir(job_name)
     os.makedirs(job_dir, exist_ok=True)
 
-    # Save files to disk
-    pattern_path = os.path.join(job_dir, "pattern.ai")
-    with open(pattern_path, "wb") as f: f.write(await pattern_ai.read())
+    # Save files to disk. pattern.ai = adult, pattern_youth.ai = youth; either
+    # may be absent, and the plan's sizes decide which are actually required
+    # (checked below, once the plan exists).
+    def _given(upload):
+        return bool(upload and upload.filename)
+
+    if not _given(pattern_ai) and not _given(pattern_youth_ai):
+        raise HTTPException(
+            status_code=400,
+            detail="No pattern file was given. Attach the Adult Pattern, the Youth Pattern, or both.",
+        )
+
+    pattern_path = None
+    if _given(pattern_ai):
+        pattern_path = os.path.join(job_dir, "pattern.ai")
+        with open(pattern_path, "wb") as f: f.write(await pattern_ai.read())
+
+    pattern_youth_path = None
+    if _given(pattern_youth_ai):
+        pattern_youth_path = os.path.join(job_dir, "pattern_youth.ai")
+        with open(pattern_youth_path, "wb") as f: f.write(await pattern_youth_ai.read())
 
     mockup_path = os.path.join(job_dir, "mockup.ai")
     with open(mockup_path, "wb") as f: f.write(await mockup_ai.read())
@@ -1261,6 +1331,21 @@ async def upload_files(
         excel_content = await excel_file.read()
         plan_dict = await _build_plan(excel_content, job_id, user_instructions, opt)
 
+        # The sizes are only known now, so this is the earliest the pattern
+        # files can be checked against them. A failure here lands in the
+        # `finally` below, which removes the whole upload folder.
+        needs_adult, needs_youth = pattern_files_needed(plan_dict)
+        missing_patterns = []
+        if needs_adult and not pattern_path:
+            missing_patterns.append("the Adult Pattern (this order has adult sizes)")
+        if needs_youth and not pattern_youth_path:
+            missing_patterns.append("the Youth Pattern (this order has youth, toddler or month sizes)")
+        if missing_patterns:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing " + ", and ".join(missing_patterns) + ".",
+            )
+
         # Trigger Illustrator Automation in Background. The slot is claimed
         # here, atomically, rather than relying on the fail-fast check at the
         # top: the Gemini call above takes ~20s, and a second upload that
@@ -1271,6 +1356,7 @@ async def upload_files(
         background_tasks.add_task(
             _run_job_locked,
             job_id, job_dir, plan_dict, pattern_path, mockup_path,
+            pattern_youth_ai_path=pattern_youth_path,
             logo_library_ai_path=logo_library_path,
         )
         job_started = True
@@ -1318,7 +1404,16 @@ async def resume_job(job_id: str, request: ResumeRequest, background_tasks: Back
     # resumed job produces the same smallest -> largest pd.ai as a fresh one.
     _sort_size_groups(plan_data)
 
-    pattern_path = os.path.join(job_dir, "pattern.ai")
+    # Whichever pattern file(s) this job was started with are still on disk;
+    # only those are passed back (same optional-either-or as /jobs/upload).
+    def _saved(name):
+        p = os.path.join(job_dir, name)
+        return p if os.path.exists(p) else None
+
+    pattern_path = _saved("pattern.ai")
+    pattern_youth_path = _saved("pattern_youth.ai")
+    if not pattern_path and not pattern_youth_path:
+        raise HTTPException(status_code=404, detail="This job's folder has no pattern file to resume from")
     mockup_path = os.path.join(job_dir, "mockup.ai")
     logo_library_path = os.path.join(job_dir, "logo_library.ai")
     if not os.path.exists(logo_library_path):
@@ -1347,6 +1442,7 @@ async def resume_job(job_id: str, request: ResumeRequest, background_tasks: Back
     background_tasks.add_task(
         _run_job_locked,
         job_id, job_dir, plan_data, pattern_path, mockup_path,
+        pattern_youth_ai_path=pattern_youth_path,
         logo_library_ai_path=logo_library_path,
         ignore_missing_fonts=(last_status.get("font_missing") and request.action == "continue"),
         force_font_refresh=(last_status.get("font_missing") and request.action == "retry"),

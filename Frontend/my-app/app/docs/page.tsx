@@ -360,7 +360,7 @@ function Table({ head, rows }: { head: string[]; rows: ReactNode[][] }) {
   return (
     <Panel className="overflow-hidden">
       <div className="custom-scrollbar overflow-x-auto">
-        <table className="w-full min-w-[640px] border-collapse text-left">
+        <table className="w-full min-w-160 border-collapse text-left">
           <thead>
             <tr className="border-b border-line bg-surface-2">
               {head.map((h) => (
@@ -600,7 +600,7 @@ export default function Docs() {
                     download
                     className="group flex items-start gap-3 rounded-xl border border-line bg-surface p-4 transition-colors hover:border-brand/50"
                   >
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-brand to-accent text-white">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-linear-to-br from-brand to-accent text-white">
                       <Icon.Download className="h-4 w-4" />
                     </span>
                     <span>
@@ -932,7 +932,7 @@ export default function Docs() {
               </p>
               <Link
                 href="/"
-                className="mt-4 inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-brand to-accent px-5 py-2.5 text-[0.875rem] font-bold text-white transition-all hover:brightness-110"
+                className="mt-4 inline-flex items-center gap-2 rounded-xl bg-linear-to-r from-brand to-accent px-5 py-2.5 text-[0.875rem] font-bold text-white transition-all hover:brightness-110"
               >
                 <Icon.Upload className="h-4 w-4" />
                 Open the orchestrator

@@ -9,6 +9,7 @@ import ctypes
 import winreg
 import struct
 import subprocess
+import zipfile
 import threading
 import time
 
@@ -103,6 +104,51 @@ def _stamp_jpeg_dpi(render_dir, dpi=EXPORT_DPI):
                 logger.warning(f"Could not stamp dpi on {name}: {e}")
     logger.info(f"Stamped {dpi} dpi on {patched} render(s)")
     return patched
+
+
+def _archive_stored(zip_path, root_dir, base_dir):
+    """shutil.make_archive's zip, with the COMPRESSION TAKEN OUT.
+
+    The order files are already compressed. automate_production.jsx saves them
+    with IllustratorSaveOptions.compressed = true, so deflating them a second
+    time is close to pure waste - measured on job Youth_w_adult_testing
+    (2026-09-15, 14 files / 8.25 GB of .ai):
+
+        deflate level 6   0.5% smaller - 42 MB saved out of 8250
+        cost              ~30 minutes, one core pinned, the whole of it
+                          inside the "Cleaning up and generating Zip
+                          package..." step at 90%
+
+    Half an hour of a designer watching a frozen-looking progress bar, to save
+    a twentieth of one percent. ZIP_STORED makes this step disk-speed-bound
+    instead of CPU-bound.
+
+    The saving is this small only because the INPUT is already compressed. If
+    the renders folder ever fills with genuinely compressible content, this is
+    the line to reconsider - but .ai and .jpg are both already packed, and
+    together they are effectively the whole archive (the .txt/.json logs come
+    to well under a megabyte).
+
+    Same archive LAYOUT as shutil.make_archive - the base directory entry, then
+    every sub-directory and file relative to root_dir - so the zip still
+    unpacks into ONE folder named after the job. allowZip64 is not optional
+    here: a single order file can pass the 4 GB ZIP32 limit on its own, and the
+    archive as a whole passes it routinely.
+    """
+    base_path = os.path.join(root_dir, base_dir)
+    written = 0
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
+        zf.write(base_path, base_dir)
+        for dirpath, dirnames, filenames in os.walk(base_path):
+            for name in sorted(dirnames):
+                path = os.path.join(dirpath, name)
+                zf.write(path, os.path.relpath(path, root_dir))
+            for name in sorted(filenames):
+                path = os.path.join(dirpath, name)
+                if os.path.isfile(path):
+                    zf.write(path, os.path.relpath(path, root_dir))
+                    written += 1
+    return written
 
 
 FONT_EXTENSIONS = (".ttf", ".otf", ".ttc")
@@ -802,11 +848,13 @@ _FRIENDLY_SIZE_MAP = {
     "XS": "XS", "S": "Small", "M": "Medium", "L": "Large", "XL": "XL",
     "XXL": "2XL", "2XL": "2XL", "3XL": "3XL", "XXXL": "3XL",
     "4XL": "4XL", "XXXXL": "4XL",
-    # Youth and toddler codes map to themselves - the pattern names them
-    # "YXS Front" / "2T Front", not a spelled-out word.
+    # Youth, toddler and infant-month codes map to themselves - the pattern
+    # names them "YXS Front" / "2T Front" / "6M Front", not a spelled-out word.
     "YXS": "YXS", "YS": "YS", "YM": "YM", "YL": "YL", "YXL": "YXL",
     "1T": "1T", "2T": "2T", "3T": "3T", "4T": "4T", "5T": "5T",
     "6T": "6T", "7T": "7T", "8T": "8T", "9T": "9T", "10T": "10T",
+    "1M": "1M", "2M": "2M", "3M": "3M", "4M": "4M", "5M": "5M", "6M": "6M",
+    "7M": "7M", "8M": "8M", "9M": "9M", "10M": "10M", "11M": "11M", "12M": "12M",
 }
 
 # Spelled-out words that mean a bare size code, so "Youth Small" resolves the
@@ -842,11 +890,32 @@ def _friendly_size(size):
             # drops the T.
             if rest.isdigit() and (rest + "T") in _FRIENDLY_SIZE_MAP:
                 return _FRIENDLY_SIZE_MAP[rest + "T"]
+        # Infant months, same shape as TODDLER above: "Month 6" / "Infant 6M".
+        if head in ("MONTH", "MONTHS", "MO", "INFANT", "BABY"):
+            if rest in _FRIENDLY_SIZE_MAP:
+                return _FRIENDLY_SIZE_MAP[rest]
+            if rest.isdigit() and (rest + "M") in _FRIENDLY_SIZE_MAP:
+                return _FRIENDLY_SIZE_MAP[rest + "M"]
+        # TRAILING age word - "6 Months", "4 Toddler". The number is the head
+        # here, which none of the branches above can read.
+        if head.isdigit():
+            if rest in ("MONTH", "MONTHS", "MO") and (head + "M") in _FRIENDLY_SIZE_MAP:
+                return _FRIENDLY_SIZE_MAP[head + "M"]
+            if rest == "TODDLER" and (head + "T") in _FRIENDLY_SIZE_MAP:
+                return _FRIENDLY_SIZE_MAP[head + "T"]
     # Adult "A" prefix (AM = M): the same size, just marked to pair visually
     # with the youth "Y" codes. No entry above starts with "A", so stripping it
     # can never mis-read a real size name.
     if len(flat) > 1 and flat[0] == "A" and flat[1:] in _FRIENDLY_SIZE_MAP:
         return _FRIENDLY_SIZE_MAP[flat[1:]]
+    # "6MO" / "6MONTHS" / "MONTH6" written with no space at all. A bare "6M" is
+    # already a map key and was answered above, so this only ever sees the
+    # spelled-out forms.
+    m = re.match(r"^(?:([0-9]+)(?:MO|MONTHS?)|(?:MONTHS?|MO)([0-9]+))$", flat)
+    if m:
+        num = m.group(1) or m.group(2)
+        if (num + "M") in _FRIENDLY_SIZE_MAP:
+            return _FRIENDLY_SIZE_MAP[num + "M"]
     return size
 
 
@@ -866,8 +935,20 @@ def _size_aliases(size_label):
     if re.match(r"^[0-9]+T$", up):
         add("Toddler " + str(size_label))
         add("Toddler " + str(size_label)[:-1])
+    # Infant months: "6M" <-> "6 Months" / "Month 6" / "Infant 6M".
+    if re.match(r"^[0-9]+M$", up):
+        num = str(size_label)[:-1]
+        add(num + " Months")
+        add(num + " Month")
+        add("Month " + num)
+        add("Infant " + str(size_label))
+    # The "Adult "/"A" spellings below belong to the adult ladder only. Youth,
+    # toddler AND month codes are all excluded from `shorts` - without the month
+    # clause a 1M panel was also probed as "Adult 1M" and "A1M", names no
+    # pattern file will ever carry.
     shorts = [k for k, v in _FRIENDLY_SIZE_MAP.items()
-              if v == size_label and not k.startswith("Y") and not re.match(r"^[0-9]+T$", k)]
+              if v == size_label and not k.startswith("Y")
+              and not re.match(r"^[0-9]+[TM]$", k)]
     if shorts:
         add("Adult " + str(size_label))
         for sc in shorts:
@@ -876,6 +957,65 @@ def _size_aliases(size_label):
                 add("Adult " + sc)
             add("A" + sc)
     return out
+
+
+# ---------------------------------------------------------------------------
+# WHICH OF THE TWO PATTERN FILES A SIZE IS CUT FROM
+#
+# Adult and youth are graded in separate .ai files, and an order may contain
+# either or both. The youth file carries YXS-YXL, the toddler codes 1T-10T and
+# the infant months 1M-12M; every other size comes from the adult file.
+# ---------------------------------------------------------------------------
+_YOUTH_PATTERN_CODES = {"YXS", "YS", "YM", "YL", "YXL"}
+
+
+def is_youth_pattern_size(size):
+    """True when this size's panels live in the YOUTH pattern file.
+
+    Tested on the FRIENDLY label, never the raw Excel cell: "Toddler 4" and
+    "6 Months" carry no trailing T/M and no leading Y until _friendly_size has
+    collapsed them to "4T"/"6M". Mirrors isYouthPatternSize in
+    automate_production.jsx - keep the two identical.
+    """
+    label = str(_friendly_size(size) or "").upper().strip()
+    if label in _YOUTH_PATTERN_CODES:
+        return True
+    if re.match(r"^[0-9]+[TM]$", label):
+        return True
+    # A spelling neither map knows but which still says "Youth" out loud. Sent
+    # to the youth file rather than silently cut from the adult pattern - the
+    # pattern-piece pre-flight still has to FIND the panel there, so a wrong
+    # guess surfaces as a pause, never as bad fabric.
+    return label.startswith("YOUTH")
+
+
+def pattern_files_needed(plan_data):
+    """(needs_adult, needs_youth) for one plan.
+
+    Drives BOTH the upload validation and the pre-flight split, so a job can
+    never start without a pattern file for sizes it actually contains. Neither
+    file is required on its own: an order can be adult-only, youth-only or
+    mixed, and the sizes are what decide - not a checkbox, and not which files
+    happened to be picked.
+
+    A group whose items are ALL size-independent (the Universal accessories
+    group) asks for neither file: its panels carry no size prefix and are looked
+    up in whichever file the order already has.
+    """
+    needs_adult = needs_youth = False
+    for group in plan_data.get("production_groups", []) or []:
+        items = group.get("items", []) or []
+        if all(_is_accessory(it.get("part_name")) for it in items):
+            continue
+        raw = group.get("size")
+        label = str(_friendly_size(raw) or "").strip()
+        if not label or label == "Universal":
+            continue
+        if is_youth_pattern_size(raw):
+            needs_youth = True
+        else:
+            needs_adult = True
+    return needs_adult, needs_youth
 
 
 def _is_accessory(part):
@@ -908,6 +1048,13 @@ def _part_label_aliases(part_label):
         return [part_label, "Sleeve Right", "SS Right", "Right SS", "LS Right", "Right LS"]
     if p == "left sleeve":
         return [part_label, "Sleeve Left", "SS Left", "Left SS", "LS Left", "Left LS"]
+    # RIB & CUFF, same six spellings the mockup side has always taken. "Cuff"
+    # ahead of the canonical name per explicit instruction - see the JSX note.
+    # Order matters here beyond the probe sequence: whatever is first becomes the
+    # name _describe_missing_piece leads the warning with, so an operator reading
+    # it is told to use the spelling this pattern actually prefers.
+    if p == "rib & cuff":
+        return ["Cuff", "Rib", part_label, "Rib and Cuff", "Cuff & Rib", "Cuff and Rib"]
     return [part_label]
 
 
@@ -959,12 +1106,35 @@ def _expected_pattern_pieces(plan_data):
                     return [list(labels)]
                 return [[f"{alias} {lb}" for lb in labels] for alias in _size_aliases(_s)]
 
+            # ...and ONE GROUP PER PART SPELLING on top of that, because
+            # findPatternPanel runs partLabelAliases OUTSIDE its size loop:
+            # "Small LS" is a name the renderer genuinely reaches. Probing only
+            # the canonical "Small Long Sleeve" here paused whole orders over
+            # sleeves that were sitting in the pattern the whole time - the
+            # abbreviations shipped into the JSX but the call was never wired
+            # into this side, so the mirror existed and did nothing.
+            def expand_aliases(label, _e=expand, _p=part, _s=size_label):
+                # NOT for accessories or Universal: findPatternPanel's
+                # size-independent branch looks those up by their bare label
+                # with no partLabelAliases at all. Offering aliases here would
+                # make the pre-flight LOOSER than the renderer, which passes a
+                # job that then silently drops the piece - the exact failure
+                # this whole check exists to prevent.
+                if _is_accessory(_p) or _s == "Universal":
+                    return _e([label])
+                out = []
+                for alias in _part_label_aliases(label):
+                    out.extend(_e([alias]))
+                return out
+
             if part == "sleeve":
-                alternatives = expand(["Short Sleeve"]) + expand(["Long Sleeve"]) + expand(["Sleeve"])
+                alternatives = (expand_aliases("Short Sleeve")
+                                + expand_aliases("Long Sleeve")
+                                + expand(["Sleeve"]))
             elif full_button and part.lower() == "front":
                 alternatives = expand(["Front"]) + expand(["Front Left", "Front Right"])
             else:
-                alternatives = expand([_PART_LABEL_MAP.get(part, part)])
+                alternatives = expand_aliases(_PART_LABEL_MAP.get(part, part))
 
             key = tuple(tuple(alt) for alt in alternatives)
             if key in seen:
@@ -974,52 +1144,68 @@ def _expected_pattern_pieces(plan_data):
     return required
 
 
+# Alternative spellings to print before summarizing the rest. Part aliases
+# MULTIPLY with size aliases - a long sleeve now has 4 x 5 = 20 accepted names -
+# and a bullet listing twenty of them is something an operator skips rather than
+# reads. The first few always cover both axes (every size spelling of the
+# canonical name, then the first abbreviation), which is what makes the pattern
+# obvious; the count carries the rest.
+_MAX_ALTERNATIVES_SHOWN = 5
+
+
 def _describe_missing_piece(alternatives, description):
     def fmt(names):
         return " + ".join('"%s"' % n for n in names)
     text = fmt(alternatives[0])
-    if len(alternatives) > 1:
-        text += " (or " + ", ".join(fmt(alt) for alt in alternatives[1:]) + ")"
+    rest = alternatives[1:]
+    if rest:
+        shown = rest[:_MAX_ALTERNATIVES_SHOWN]
+        text += " (or " + ", ".join(fmt(alt) for alt in shown)
+        if len(rest) > len(shown):
+            text += f", +{len(rest) - len(shown)} more spellings"
+        text += ")"
     return f"{text} - needed for {description}"
 
 
-def _find_missing_pattern_pieces(app, pattern_ai_path, plan_data):
-    """The panel names this order needs that the pattern file does not have.
+def _split_requirements_by_file(required):
+    """Sort _expected_pattern_pieces' output into the file each one belongs to.
 
-    automate_production.jsx:824 looks every piece up with findAnywhere and, on
-    a miss, logs "CRITICAL: Could not find '<name>' in Master Pattern document.
-    Skipping." and carries straight on - so one mistyped or absent panel costs
-    a full Illustrator run and ships an order file quietly missing that piece,
-    with nothing but the debug log to say so.
-
-    The probe replicates findAnywhere's index EXACTLY - the same name
-    normalization AND the same depth>3 cut-off as _buildNameIndex - so a name
-    this finds is a name the JSX can also reach. Searching deeper would pass
-    pieces the render will still miss.
-
-    Same MUST-go-through-Illustrator and zero-other-documents-open precondition
-    as _mockup_has_center_object. Returns [] when nothing is missing and also
-    when the scan itself failed - an unreadable pattern must not block the job,
-    same as every check above.
+    Returns (adult, youth, either). The third bucket is not a convenience: an
+    accessory's alternatives key carries no size, so _expected_pattern_pieces
+    dedupes it to ONE entry emitted against whichever group reached it first -
+    and after the smallest-first sort that group is a youth one. Splitting the
+    plan by age alone would therefore hunt the Placket only in the youth file.
+    Size-independent panels are satisfied by EITHER file.
     """
-    required = _expected_pattern_pieces(plan_data)
-    wanted = {}
-    for alternatives, _desc in required:
-        for names in alternatives:
-            for name in names:
-                n = _norm_name(name)
-                if n:
-                    wanted[n] = 1
-    if not wanted:
-        return []
+    adult, youth, either = [], [], []
+    for alternatives, desc in required:
+        m = re.search(r"size (.+?), part '(.+?)'$", desc)
+        raw_size = m.group(1) if m else ""
+        part = m.group(2) if m else ""
+        if _is_accessory(part) or str(_friendly_size(raw_size)) == "Universal":
+            either.append((alternatives, desc))
+        elif is_youth_pattern_size(raw_size):
+            youth.append((alternatives, desc))
+        else:
+            adult.append((alternatives, desc))
+    return adult, youth, either
 
+
+def _scan_pattern_for_names(app, pattern_ai_path, wanted):
+    """Which of `wanted` (normalized names) this ONE pattern file contains.
+
+    Returns None when the scan itself failed, which the caller must treat as
+    "do not block the job" rather than "nothing was found".
+    """
+    if not wanted:
+        return set()
     try:
         probe = (
             "(function(){"
             "var doc = app.open(new File(" + json.dumps(os.path.abspath(pattern_ai_path)) + "));"
             "try {"
             "function norm(s){ return (s||'').toLowerCase().replace(/[^a-z0-9]/g,''); }"
-            "var want = " + json.dumps(wanted) + ";"
+            "var want = " + json.dumps({n: 1 for n in wanted}) + ";"
             "var found = {};"
             # Same shape as _buildNameIndex in automate_production.jsx: names
             # registered level by level, groups and sub-layers walked to depth
@@ -1048,19 +1234,100 @@ def _find_missing_pattern_pieces(app, pattern_ai_path, plan_data):
         result = str(app.DoJavaScript(probe)).strip()
     except Exception as e:
         logger.warning(f"Could not scan '{os.path.basename(pattern_ai_path)}' for the order's panel names: {e}")
-        return []
+        return None
 
     parts = result.split("|")
     if not parts or parts[0] != "OK":
         logger.warning(f"Pattern-piece scan returned an unexpected result ({result[:120]!r}) - check skipped.")
+        return None
+    return set(p for p in parts[1:] if p)
+
+
+def _find_missing_pattern_pieces(app, pattern_ai_path, plan_data, pattern_youth_ai_path=None):
+    """The panel names this order needs that its pattern file(s) do not have.
+
+    automate_production.jsx:824 looks every piece up with findAnywhere and, on
+    a miss, logs "CRITICAL: Could not find '<name>' in Master Pattern document.
+    Skipping." and carries straight on - so one mistyped or absent panel costs
+    a full Illustrator run and ships an order file quietly missing that piece,
+    with nothing but the debug log to say so.
+
+    TWO FILES. Each requirement is checked against the file it will actually be
+    rendered from (see _split_requirements_by_file), so a youth panel missing
+    from the youth file is reported even when the adult file happens to carry a
+    same-named piece. Size-independent accessories are satisfied by either file,
+    matching findPatternPanel's own adult-then-youth fallback.
+
+    The probe replicates findAnywhere's index EXACTLY - the same name
+    normalization AND the same depth>3 cut-off as _buildNameIndex - so a name
+    this finds is a name the JSX can also reach. Searching deeper would pass
+    pieces the render will still miss.
+
+    Same MUST-go-through-Illustrator and zero-other-documents-open precondition
+    as _mockup_has_center_object. Returns [] when nothing is missing and also
+    when a scan itself failed - an unreadable pattern must not block the job,
+    same as every check above.
+    """
+    required = _expected_pattern_pieces(plan_data)
+    if not required:
         return []
-    present = set(p for p in parts[1:] if p)
+    adult_req, youth_req, either_req = _split_requirements_by_file(required)
+
+    # One scan per file, asking for everything that file could possibly answer:
+    # its own bucket plus the accessories, which either file may carry.
+    def names_in(buckets):
+        out = set()
+        for alternatives, _desc in buckets:
+            for names in alternatives:
+                for name in names:
+                    n = _norm_name(name)
+                    if n:
+                        out.add(n)
+        return out
+
+    adult_present = youth_present = None
+    if pattern_ai_path:
+        adult_present = _scan_pattern_for_names(
+            app, pattern_ai_path, names_in(adult_req + either_req))
+    if pattern_youth_ai_path:
+        youth_present = _scan_pattern_for_names(
+            app, pattern_youth_ai_path, names_in(youth_req + either_req))
+
+    # A failed scan (None) must not be read as "found nothing" - that would
+    # pause every job whose pattern could not be walked.
+    if adult_present is None and youth_present is None:
+        return []
 
     missing = []
-    for alternatives, description in required:
-        if any(all(_norm_name(n) in present for n in names) for names in alternatives):
-            continue
-        missing.append(_describe_missing_piece(alternatives, description))
+
+    def check(buckets, pools):
+        # `pools` holds one name set per file this bucket may be answered from,
+        # and ONLY for files the order actually has. A None entry means that
+        # file's scan failed - and then the whole bucket goes unjudged, because
+        # the panel it is looking for may well be in the file that could not be
+        # read. Reporting it missing would pause a job over an unreadable
+        # pattern, which is exactly what every check in this module refuses to
+        # do. An empty `pools` means there is no file to answer from at all;
+        # the upload validation is what guarantees that cannot happen for a
+        # bucket the order actually needs.
+        if not pools or any(p is None for p in pools):
+            return
+        for alternatives, description in buckets:
+            if any(all(_norm_name(n) in pool for n in names)
+                   for pool in pools for names in alternatives):
+                continue
+            missing.append(_describe_missing_piece(alternatives, description))
+
+    check(adult_req, [adult_present] if pattern_ai_path else [])
+    check(youth_req, [youth_present] if pattern_youth_ai_path else [])
+    # "Whichever file has it" - one shared panel serves the whole order, so an
+    # accessory only has to be in ONE of the files this order was given.
+    either_pools = []
+    if pattern_ai_path:
+        either_pools.append(adult_present)
+    if pattern_youth_ai_path:
+        either_pools.append(youth_present)
+    check(either_req, either_pools)
     return missing
 
 
@@ -1274,6 +1541,7 @@ def _read_render_state(path):
 
 
 def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mockup_ai_path, reference_ai_path=None,
+                               pattern_youth_ai_path=None,
                                logo_library_ai_path=None, ignore_missing_fonts=False, force_font_refresh=False,
                                ignore_center_match_warning=False, ignore_local_tag_warning=False,
                                ignore_pattern_match_warning=False, ignore_side_seam_match_warning=False,
@@ -1283,6 +1551,29 @@ def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mock
                                ignore_unsaved_work=False):
     pythoncom.CoInitialize()
     update_status(job_dir, "Initializing Illustrator...", 10)
+
+    # TWO PATTERN FILES, ONE ACTIVE DOCUMENT.
+    #
+    # Adult and youth are graded in separate .ai files and an order may hold
+    # either or both. The JSX takes patternDoc from app.activeDocument
+    # (automate_production.jsx:10), so exactly ONE of them is opened here and
+    # left active - the adult file normally, the youth file when that is all the
+    # order has. The other, when there is one, is opened by the JSX itself,
+    # before the order document exists.
+    primary_pattern_path = pattern_ai_path or pattern_youth_ai_path
+    if not primary_pattern_path:
+        raise ValueError("No pattern file was given - a job needs an adult pattern, a youth pattern, or both.")
+    pattern_is_youth_only = not pattern_ai_path and bool(pattern_youth_ai_path)
+    # Only set when the youth file is a SECOND document: in a youth-only order
+    # Python already opened it above, and pattern_is_youth_only says so.
+    jsx_youth_pattern_path = None
+    if pattern_youth_ai_path and not pattern_is_youth_only:
+        jsx_youth_pattern_path = pattern_youth_ai_path
+    logger.info(
+        "Pattern files: adult=%s youth=%s",
+        os.path.basename(pattern_ai_path) if pattern_ai_path else "(none)",
+        os.path.basename(pattern_youth_ai_path) if pattern_youth_ai_path else "(none)",
+    )
 
     watchdog_fired = threading.Event()
     # Targeting Illustrator 2015 specifically as requested; plain ProgID is the
@@ -1622,9 +1913,16 @@ def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mock
         # way), so _mockup_has_hoodie_objects takes no such flag.
         hoodie_on = bool(plan_data.get("hoodie"))
         hoodie_jersey_on = bool(plan_data.get("hoodie_jersey"))
+        # EVERY pattern file the order uses has to carry the hood pieces, not
+        # just one of them. This check is file-global (it hunts for any "hood"
+        # group anywhere in the file, not per size), so testing only the adult
+        # file would let a youth pattern with no hoods pass on the adult file's
+        # hoods - and every youth hood would then be silently absent.
+        hoodie_pattern_paths = [p for p in (pattern_ai_path, pattern_youth_ai_path) if p]
         if ((hoodie_on or hoodie_jersey_on)
                 and not ignore_hoodie_warning
-                and (not _pattern_has_hoodie_objects(app, pattern_ai_path, require_pocket=hoodie_on)
+                and (any(not _pattern_has_hoodie_objects(app, p, require_pocket=hoodie_on)
+                         for p in hoodie_pattern_paths)
                      or not _mockup_has_hoodie_objects(app, mockup_ai_path))):
             garment = "Hoodie" if hoodie_on else "Hoodie Jersey"
             pieces = "Hood/Pocket/Border" if hoodie_on else "Hood/Border"
@@ -1677,7 +1975,8 @@ def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mock
         # short a piece.
         if not ignore_pattern_piece_warning:
             update_status(job_dir, "Checking pattern piece names...", 29)
-            missing_pieces = _find_missing_pattern_pieces(app, pattern_ai_path, plan_data)
+            missing_pieces = _find_missing_pattern_pieces(
+                app, pattern_ai_path, plan_data, pattern_youth_ai_path=pattern_youth_ai_path)
             if missing_pieces:
                 logger.info(f"Automation paused: pattern file has no panel for: {missing_pieces}")
                 with open(os.path.join(job_dir, "status.json"), "w") as f:
@@ -1696,9 +1995,11 @@ def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mock
 
         update_status(job_dir, "Opening Pattern file...", 30)
 
-        # Robust opening with path normalization
-        abs_pattern_path = os.path.abspath(pattern_ai_path).replace("\\", "/")
-        logger.info(f"Opening pattern: {abs_pattern_path}")
+        # Robust opening with path normalization. This is the document the JSX
+        # picks up as app.activeDocument - see primary_pattern_path above.
+        abs_pattern_path = os.path.abspath(primary_pattern_path).replace("\\", "/")
+        logger.info(f"Opening pattern: {abs_pattern_path} "
+                    f"({'youth' if pattern_is_youth_only else 'adult'})")
         
         doc = None
         for attempt in range(3):
@@ -1726,6 +2027,10 @@ def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mock
         # Ensure arguments use forward slashes and absolute paths
         ref_path_arg = f"'{os.path.abspath(reference_ai_path).replace('\\', '/')}'" if reference_ai_path else "undefined"
         logo_lib_arg = f"'{os.path.abspath(logo_library_ai_path).replace('\\', '/')}'" if logo_library_ai_path else "undefined"
+        youth_pattern_arg = (
+            f"'{os.path.abspath(jsx_youth_pattern_path).replace('\\', '/')}'"
+            if jsx_youth_pattern_path else "undefined"
+        )
 
         # CHUNKED RENDER. The JSX writes this file after every .ai it saves and
         # closes, and reads it back on the next run to continue where it left
@@ -1741,6 +2046,11 @@ def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mock
             f"var jobId = '{job_id}'; "
             f"var referencePath = {ref_path_arg}; "
             f"var logoLibraryPath = {logo_lib_arg}; "
+            # The SECOND pattern file, and which role the already-open one has.
+            # The JSX opens and warms this itself, before the order document
+            # exists - see the note next to patternYouthDoc there.
+            f"var patternYouthPath = {youth_pattern_arg}; "
+            f"var patternIsYouthOnly = {'true' if pattern_is_youth_only else 'false'}; "
             f"var resumeStatePath = '{resume_state_path.replace('\\', '/')}'; "
             f"var filesPerRun = {ILLUSTRATOR_FILES_PER_RUN};"
         )
@@ -1916,7 +2226,18 @@ def run_illustrator_automation(job_id, job_dir, plan_data, pattern_ai_path, mock
         # Archived as job_dir/<job name>/... so the zip unpacks into ONE folder
         # named after the job, holding the size folders - not a loose spray of
         # size folders into whatever directory the user unzipped in.
-        shutil.make_archive(zip_base_name, 'zip', job_dir, os.path.basename(render_dir))
+        #
+        # NOT shutil.make_archive: it deflates, and these files are already
+        # compressed. See _archive_stored for the measurement - 30 minutes at
+        # 90% to save 0.5%.
+        zip_t0 = time.time()
+        zipped = _archive_stored(
+            f"{zip_base_name}.zip", job_dir, os.path.basename(render_dir))
+        zip_mb = os.path.getsize(f"{zip_base_name}.zip") / (1024 * 1024)
+        logger.info(
+            f"Zip written: {zipped} file(s), {zip_mb:.0f} MB in "
+            f"{time.time() - zip_t0:.0f}s (stored, not deflated)."
+        )
 
         # Side<->sleeve matching: surface any skipped parts to the user. The
         # JSX writes them to jobDir (for this status) and to the renders folder

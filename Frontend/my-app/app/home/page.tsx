@@ -145,7 +145,7 @@ export default function Home() {
           <div className="mt-8 flex flex-wrap gap-3">
             <Link
               href="/"
-              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-brand to-accent px-5 py-3 text-sm font-bold text-white shadow-[0_14px_34px_-14px_var(--brand)] transition-all hover:brightness-110 active:scale-[0.99]"
+              className="inline-flex items-center gap-2 rounded-xl bg-linear-to-r from-brand to-accent px-5 py-3 text-sm font-bold text-white shadow-[0_14px_34px_-14px_var(--brand)] transition-all hover:brightness-110 active:scale-[0.99]"
             >
               <Icon.Spark className="h-4 w-4" />
               Start a production job
@@ -186,7 +186,7 @@ export default function Home() {
           {FEATURES.map((f) => (
             <Panel
               key={f.title}
-              className="p-5 transition-transform hover:-translate-y-0.5 hover:shadow-[var(--shadow-lift)]"
+              className="p-5 transition-transform hover:-translate-y-0.5 hover:shadow-(--shadow-lift)"
             >
               <span
                 className={`flex h-10 w-10 items-center justify-center rounded-xl text-white ${f.tile}`}
@@ -214,7 +214,7 @@ export default function Home() {
             {STEPS.map((s) => (
               <li
                 key={s.step}
-                className="relative rounded-2xl border border-line bg-surface p-5 shadow-[var(--shadow-soft)]"
+                className="relative rounded-2xl border border-line bg-surface p-5 shadow-(--shadow-soft)"
               >
                 <span
                   className={`flex h-9 w-9 items-center justify-center rounded-xl text-white ${s.tile}`}
@@ -291,11 +291,11 @@ export default function Home() {
                 <a
                   href="/AIApparelAgent.zip"
                   download
-                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-brand to-accent px-5 py-3 text-sm font-bold text-white shadow-[0_14px_34px_-14px_var(--brand)] transition-all hover:brightness-110"
+                  className="inline-flex items-center gap-2 rounded-xl bg-linear-to-r from-brand to-accent px-5 py-3 text-sm font-bold text-white shadow-[0_14px_34px_-14px_var(--brand)] transition-all hover:brightness-110"
                 >
                   <Icon.Download className="h-4 w-4" />
                   Download the agent
-                  <span className="font-mono text-xs font-medium opacity-80">268 KB</span>
+                  <span className="font-mono text-xs font-medium opacity-80">287 KB</span>
                 </a>
                 <Link
                   href="/docs"
@@ -341,7 +341,7 @@ export default function Home() {
                 },
               ].map((s) => (
                 <li key={s.n} className="flex gap-3 rounded-2xl border border-line bg-surface-2 p-4">
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-brand to-accent text-xs font-black text-white">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-linear-to-br from-brand to-accent text-xs font-black text-white">
                     {s.n}
                   </span>
                   <span>
@@ -357,7 +357,7 @@ export default function Home() {
 
       {/* ------------------------------------------------------------- cta */}
       <section className="mx-auto max-w-7xl px-5 pb-20">
-        <div className="relative overflow-hidden rounded-3xl border border-line bg-aurora p-8 text-center shadow-[var(--shadow-lift)] sm:p-12">
+        <div className="relative overflow-hidden rounded-3xl border border-line bg-aurora p-8 text-center shadow-(--shadow-lift) sm:p-12">
           <div className="pointer-events-none absolute inset-0 bg-blueprint opacity-50" />
           <div className="relative">
             <h2 className="text-2xl font-black tracking-tight text-ink sm:text-3xl">
@@ -370,7 +370,7 @@ export default function Home() {
             <div className="mt-7 flex flex-wrap justify-center gap-3">
               <Link
                 href="/"
-                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-brand to-accent px-5 py-3 text-sm font-bold text-white shadow-[0_14px_34px_-14px_var(--brand)] transition-all hover:brightness-110"
+                className="inline-flex items-center gap-2 rounded-xl bg-linear-to-r from-brand to-accent px-5 py-3 text-sm font-bold text-white shadow-[0_14px_34px_-14px_var(--brand)] transition-all hover:brightness-110"
               >
                 <Icon.Upload className="h-4 w-4" />
                 Open the orchestrator

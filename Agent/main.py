@@ -83,7 +83,11 @@ from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from services import job_runtime  # noqa: E402
-from services.illustrator_automation import run_illustrator_automation, update_status  # noqa: E402
+from services.illustrator_automation import (  # noqa: E402
+    run_illustrator_automation,
+    update_status,
+    pattern_files_needed,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("apparel-agent")
@@ -107,7 +111,52 @@ logger = logging.getLogger("apparel-agent")
 # 0.6.2 - replaced personalisation text now keeps the mockup's horizontal
 # alignment. It was re-centred on the placeholder regardless, so a left-aligned
 # player name came out centred in production.
-AGENT_VERSION = "0.6.2"
+#
+# 0.7.0 - TWO PATTERN FILES. /jobs now takes pattern_ai and pattern_youth_ai,
+# neither required on its own, and the plan's own sizes decide which are. The
+# routing, the split pre-flight and the new size families (toddler 1T-10T moved
+# ahead of the adult ladder, infant months 1M-12M added) all live in
+# services\illustrator_automation.py, which ships INSIDE this package rather
+# than through the JSX manifest - so an agent left on 0.6.2 would take the
+# upload and then render every youth panel from the adult pattern. This bump is
+# what makes install-agent.ps1 refuse to leave the old one running.
+#
+# 0.7.1 - PANEL NAME SPELLINGS. Two fixes to the pattern lookup, both of which
+# decide whether a panel reaches the order file at all:
+#   - the pre-flight ignored the part-label aliases it had been given. The
+#     renderer accepts "Small LS", the check demanded "Small Long Sleeve", and
+#     an order whose pattern spelled sleeves the short way paused on every
+#     sleeve it had (services\illustrator_automation.py).
+#   - the pattern side accepted ONE spelling of Rib & Cuff while the mockup side
+#     had always accepted six. A pattern naming the panel "Medium Cuff" found
+#     its design and not its panel, so the cuff was dropped from the render with
+#     only a CRITICAL line to say so (scripts\automate_production.jsx AND the
+#     Python mirror).
+# Both live inside this package rather than in the JSX manifest, so an agent
+# left on 0.7.0 keeps pausing jobs it could render and keeps shipping orders
+# with no cuffs in them.
+#
+# 0.7.2 - the zip step no longer deflates. The order files are already
+# compressed by Illustrator's own save, so shutil.make_archive was compressing
+# them a SECOND time: measured on Youth_w_adult_testing (14 files / 8.25 GB),
+# ~30 minutes with one core pinned, to make the archive 0.5% smaller. That is
+# the whole of the "Cleaning up and generating Zip package..." wait at 90%, and
+# it looked like a hang. ZIP_STORED makes the step disk-bound instead
+# (services\illustrator_automation.py).
+#
+# 0.7.3 - HOODIE POCKET + LOST WARNINGS, both in scripts\automate_production.jsx.
+#   - the Pocket's clipping route was gated on whether the piece carried a size
+#     tag, not on whether the pattern actually had a clipping group. On a pattern
+#     with no clip, a piece WITHOUT a tag fell through to the fallback and got a
+#     real mask, while a piece WITH one took Paste in Back into an unclipped
+#     group and exported with the Front design spilling far outside the pocket.
+#     Same pattern, opposite results, decided by a text label (3XL/4XL/5XL were
+#     wrong while XS/Small were right on job Youth_w_adult_testing).
+#   - the four warning lists were rebuilt empty at every Illustrator restart and
+#     never carried in the checkpoint, so every warnings report showed only the
+#     FINAL chunk's findings. That is why the 3XL pocket looked like a different
+#     bug from the 4XL one: its warning had been raised and then overwritten.
+AGENT_VERSION = "0.7.3"
 
 # Where every job lives on this PC. Renders and the zip are left here on
 # purpose - the designer owns this folder and decides when to clear it.
@@ -484,7 +533,11 @@ async def start_job(
     # Already built by the cloud (Excel parse + Gemini). The agent does not
     # plan; it renders what it is given.
     plan_json: str = Form(...),
-    pattern_ai: UploadFile = File(...),
+    # NEITHER pattern file is required on its own: an order can be adult-only,
+    # youth-only, or both. Which ones this order actually needs is derived from
+    # the plan's own sizes below - see pattern_files_needed.
+    pattern_ai: Optional[UploadFile] = File(None),
+    pattern_youth_ai: Optional[UploadFile] = File(None),
     mockup_ai: UploadFile = File(...),
     logo_library_ai: Optional[UploadFile] = File(None),
     fonts: List[UploadFile] = File([]),
@@ -509,6 +562,28 @@ async def start_job(
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=400, detail=f"plan_json is not valid JSON: {e}")
 
+    # WHICH PATTERN FILES THIS ORDER NEEDS - from the sizes in the plan, not
+    # from a checkbox and not from which fields happened to be filled. Checked
+    # BEFORE anything is written to disk: the uploads are already in memory, but
+    # a job that cannot render must not leave ~270MB of .ai behind either.
+    needs_adult, needs_youth = pattern_files_needed(plan_data)
+
+    def _given(upload):
+        return bool(upload and upload.filename)
+
+    if not _given(pattern_ai) and not _given(pattern_youth_ai):
+        raise HTTPException(
+            status_code=400,
+            detail="No pattern file was given. Attach the Adult Pattern, the Youth Pattern, or both.",
+        )
+    missing_patterns = []
+    if needs_adult and not _given(pattern_ai):
+        missing_patterns.append("the Adult Pattern (this order has adult sizes)")
+    if needs_youth and not _given(pattern_youth_ai):
+        missing_patterns.append("the Youth Pattern (this order has youth, toddler or month sizes)")
+    if missing_patterns:
+        raise HTTPException(status_code=400, detail="Missing " + ", and ".join(missing_patterns) + ".")
+
     # Between jobs, and only here: pick up any newer render logic before this
     # one starts. Recorded in the plan so a finished order can always answer
     # "which version built this?".
@@ -521,9 +596,19 @@ async def start_job(
 
     job_started = False
     try:
-        pattern_path = os.path.join(job_dir, "pattern.ai")
-        with open(pattern_path, "wb") as f:
-            f.write(await pattern_ai.read())
+        # pattern.ai = adult, pattern_youth.ai = youth. Either may be absent;
+        # the validation above guarantees the order has the one(s) it needs.
+        pattern_path = None
+        if _given(pattern_ai):
+            pattern_path = os.path.join(job_dir, "pattern.ai")
+            with open(pattern_path, "wb") as f:
+                f.write(await pattern_ai.read())
+
+        pattern_youth_path = None
+        if _given(pattern_youth_ai):
+            pattern_youth_path = os.path.join(job_dir, "pattern_youth.ai")
+            with open(pattern_youth_path, "wb") as f:
+                f.write(await pattern_youth_ai.read())
 
         mockup_path = os.path.join(job_dir, "mockup.ai")
         with open(mockup_path, "wb") as f:
@@ -551,6 +636,7 @@ async def start_job(
         background_tasks.add_task(
             job_runtime.run_job_locked, run_illustrator_automation,
             job_id, job_dir, plan_data, pattern_path, mockup_path,
+            pattern_youth_ai_path=pattern_youth_path,
             logo_library_ai_path=logo_library_path,
         )
         job_started = True
@@ -615,6 +701,17 @@ async def resume_job(job_id: str, body: ResumeRequest, background_tasks: Backgro
     if not os.path.exists(logo_library_path):
         logo_library_path = None
 
+    # Same optional-either-or as /jobs: whichever pattern file this job was
+    # started with is still on disk, and only that one is passed back.
+    def _saved(name):
+        p = os.path.join(job_dir, name)
+        return p if os.path.exists(p) else None
+
+    pattern_path = _saved("pattern.ai")
+    pattern_youth_path = _saved("pattern_youth.ai")
+    if not pattern_path and not pattern_youth_path:
+        raise HTTPException(status_code=404, detail="This job's folder has no pattern file to resume from")
+
     busy = job_runtime.claim_job_slot(job_id)
     if busy:
         raise job_runtime.busy_error(busy)
@@ -630,7 +727,8 @@ async def resume_job(job_id: str, body: ResumeRequest, background_tasks: Backgro
     background_tasks.add_task(
         job_runtime.run_job_locked, run_illustrator_automation,
         job_id, job_dir, plan_data,
-        os.path.join(job_dir, "pattern.ai"), os.path.join(job_dir, "mockup.ai"),
+        pattern_path, os.path.join(job_dir, "mockup.ai"),
+        pattern_youth_ai_path=pattern_youth_path,
         logo_library_ai_path=logo_library_path,
         ignore_missing_fonts=skip("font_missing"),
         force_font_refresh=bool(last_status.get("font_missing")) and body.action == "retry",

@@ -1,6 +1,99 @@
 # PENDING
 
-Last updated: 2026-09-03
+Last updated: 2026-09-14
+
+---
+
+## -1. XS ke 6 panels ki jagah wahi ek Pocket JPG export hui (2026-09-14) — SABSE AHEM
+
+Job: `C:\Production\Youth_w_adult_testing` (pehli mixed youth+adult job, do pattern files ke saath).
+
+### Alamat
+
+`XS` folder me 8 JPG bani, magar **XS3 se XS8 tak chhe files bilkul ek hain**:
+
+| File | Hona chahiye tha | Asal me kya hai |
+|---|---|---|
+| XS1.jpg | Front | ✅ Front, 6717x7654 |
+| XS2.jpg | Back | ✅ Back, 6717x7637 |
+| XS3.jpg | Long Sleeve | ❌ Pocket, 5083x2850 |
+| XS4.jpg | Rib & Cuff | ❌ wahi Pocket |
+| XS5.jpg | Inside Hood | ❌ wahi Pocket |
+| XS6.jpg | Outside Hood | ❌ wahi Pocket |
+| XS7.jpg | Border | ❌ wahi Pocket |
+| XS8.jpg | Pocket | ❌ wahi Pocket |
+
+```
+XS3..XS8  md5 = 26f1cf42caedec81ed20d7c91f1066e8   1,560,053 bytes   5083x2850
+YL7.jpg   md5 = 26f1cf42caedec81ed20d7c91f1066e8   1,560,053 bytes   5083x2850
+```
+
+### Yahi sab se ajeeb baat hai
+
+Woh chhe files **`YL/YL7.jpg` ke byte-by-byte barabar hain** — yaani **YL ki Pocket**, jo
+**pichle chunk me, ek alag Illustrator process me** export hui thi. XS ka order document
+YL ki pocket rakh hi nahi sakta. Isay samjhe bagair fix nahi karna.
+
+### Jo cheezein CONFIRM ho chuki hain (dobara mat tehqeeq karna)
+
+- **Build bilkul theek hua.** Log me `Found 'XS Rib & Cuff' in Pattern`, design paste,
+  align, `Queued JPG for instance`, aur `EXPORT: 8 JPG(s) written of 8 queued`. Koi
+  `EXPORT FAILED`, koi PARM nahi.
+- **Pattern lookup theek hai** — dono pattern files wala change qasoorwar nahi lagta.
+  Youth pattern ka index 4ms aur 2ms me bana, aur XS adult file se hi resolve hua.
+- **YM aur YL (chunk 1) bilkul theek hain** — saaton JPG alag alag dimensions ke.
+- **XS chunk 2 ki pehli size hai**, Illustrator restart ke baad. Yehi asal farq hai.
+- **Placements canvas ke andar hain**: `X:-7500 Y:7749 (1612x1837)`, `X:-5874 Y:7749`,
+  `X:-4247 Y:7749 (1407x1379)`, `X:-3906 Y:6356 (724x400)`. Log me koi artboard warning
+  nahi.
+- **XS3.jpg khol kar dekhi** — us me pocket ka shape aur wahi marble/gold design hai.
+
+### Shak ki teen jagahen (tarteeb-war dekhna)
+
+1. **`stampJpegDpi` (`illustrator_automation.py`)** — Python export ke BAAD har JPG ka
+   JFIF header dobara likhta hai. Yeh **wahi ek code hai jo dono chunks ki files ko
+   chhoota hai**, aur byte-identity isi se sab se asaani se samjh aati hai. Sab se pehle
+   yahi dekhna.
+2. **`exportResult` (`automate_production.jsx:11250`)** — `doc.artboards.setActiveArtboardIndex(idx)`
+   phir `doc.exportFile(...)`. Agar Illustrator `exportFile` ko receiver ke bajaye
+   `app.activeDocument` par chalata hai, to XS1/XS2 theek hone ki wajah bhi dhoondni hogi.
+3. **Artboard index ka takraao** — hoodie ke teen call sites (`:12373`, `:12464`, `:13068`)
+   `orderDoc.artboards.length - 1` bhejte hain. Agar `artboards.add()` khamoshi se nakaam
+   ho jaye to kai pieces ek hi index share kar lenge. Magar XS3 (Long Sleeve) main loop ka
+   piece hai aur uska apna `abIdx` hai (`:1398`, `:2113`) — sirf yeh theory XS3 ko nahi
+   samjhati.
+
+### Kal kaise shuru karna
+
+`C:\Production\Youth_w_adult_testing\Youth_w_adult_testing\debug_log.txt` mehfooz rakhna —
+poora saboot usi me hai. Saved `production_ready_order_XS.ai` khol kar uske artboards ginna
+aur unke naam/rect dekhna sab se seedha jawab dega: agar us document ke artboard 3 par
+Long Sleeve maujood hai, to masla sirf export me hai; agar nahi, to masla layout me hai.
+
+---
+
+## -0.5. 2026-09-14 ke changes — Illustrator par test baqi
+
+| Change | Kahan | Test kaise |
+|---|---|---|
+| `pdfCompatible = false` on the order .ai save | `automate_production.jsx:4078` | Naya log line: `AI file saved successfully: X (Ns, no PDF-compatible stream)`. **340s se compare karna** (YM 5m40s, YL 5m44s the). File size 799MB se kitni giri, woh bhi dekhna. |
+| Toddler order fix + months 1M–12M | `main.py` `_size_rank`, `illustrator_automation.py` size maps, JSX `sizeCodes`/`getFriendlySize`/`sizeAliases` | Ladder: `1M → … → 12M → 1T → … → 10T → YXS → … → adult → Universal` |
+| Toddler + months ko youth wala 2.5in LOCAL TAG aur apna tag letter | JSX `:4638`, `sizeToAbbrev` | 4T/6M panel par tag box 2.5in ho aur letter "4T"/"6M" likhe |
+| Do pattern files (adult + youth) | 7 files, dekho PHR 189 | Ek mixed order — dono size sets apni file se |
+
+Agent **0.7.0** build aur install ho chuka (`E:\AIApparelAgent`, `-CloudApi http://localhost:8000`),
+frontend zip bhi bani (`Frontend/my-app/public/AIApparelAgent.zip`, 282 KB).
+**Baqi hai:** zip commit + frontend redeploy, aur cloud redeploy (size order `Backend/main.py`
+me hai, woh cloud half hai).
+
+### Ek tajweez jo JAAN BUJH KAR nahi banayi
+
+"Ek waqt me ek hi pattern file khuli rahe" (youth block → restart → adult block). Mumkin hai
+aur `startNextOrderDoc` (`:4096`) me sirf rukne ki doosri wajah add karni hai. **Magar isay
+speed ka ilaaj samajh kar mat banana** — naapa gaya: youth pattern 801 KB ka hai aur 4ms me
+index hota hai, jab ke masla 799 MB ka save tha. Uske edge cases PHR 190 me likhe hain, khaas
+kar woh teen spellings (`YXXL`, `Y2XL`, bara `YOUTH`) jo sort aur routing me ikhtilaf karti
+hain aur usi guarantee ko torti hain jis par yeh design khara hai.
 
 ---
 

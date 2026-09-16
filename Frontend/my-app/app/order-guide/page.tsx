@@ -174,7 +174,7 @@ export default function OrderGuide() {
           />
           <Panel className="overflow-hidden">
             <div className="custom-scrollbar overflow-x-auto">
-              <table className="w-full min-w-[760px] border-collapse font-mono text-xs">
+              <table className="w-full min-w-190 border-collapse font-mono text-xs">
                 <tbody>
                   <tr>
                     <td className="w-8 border border-line bg-surface-3 px-2 py-1.5 text-center text-faint">

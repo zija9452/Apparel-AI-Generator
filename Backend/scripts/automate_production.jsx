@@ -7,8 +7,21 @@ function runAutomation() {
         var plan = JSON.parse(planFile.read());
         planFile.close();
 
+        // TWO PATTERN FILES. Adult and youth are graded in separate .ai files,
+        // so a mixed order needs both open at once. Python opens exactly ONE of
+        // them and leaves it active - that is patternDoc - and tells us which
+        // role it got; the second file, when there is one, is opened further
+        // down (search "patternYouthPath") while the order document still does
+        // not exist.
+        //
+        // patternDoc stays the fallback for every lookup, so a single-file order
+        // behaves exactly as it did before two files existed.
         var patternDoc = app.activeDocument;
-        
+        var patternYouthOnly = (typeof patternIsYouthOnly !== 'undefined' && patternIsYouthOnly === true);
+        var patternAdultDoc = patternYouthOnly ? null : patternDoc;
+        var patternYouthDoc = patternYouthOnly ? patternDoc : null;
+
+
         function updateStatus(msg, prog, isReady) {
             if (typeof jobDir !== 'undefined') {
                 var statusFile = new File(jobDir + "/status.json");
@@ -153,7 +166,29 @@ function runAutomation() {
         // modified between opening it and its old first lookup either, so the
         // table built here is identical to the one that used to be built later -
         // only the clock changes.
-        warmNameIndex(patternDoc, "pattern");
+        warmNameIndex(patternDoc, patternYouthOnly ? "youth pattern" : "pattern");
+
+        // THE SECOND PATTERN FILE. Opened HERE, for both of the reasons the
+        // mockup below is: it must be indexed while it is the active document
+        // (the ~6000x rule above), and every bounds read on it happens in
+        // prebuildPatternSizes, which still runs before the order document is
+        // created - so docs/792PT_COORDINATE_SHIFT.md is satisfied unchanged.
+        // Nothing new is read after app.documents.add().
+        if (typeof patternYouthPath !== 'undefined' && patternYouthPath) {
+            try {
+                patternYouthDoc = app.open(new File(patternYouthPath));
+                log("Youth pattern opened: " + patternYouthPath);
+                warmNameIndex(patternYouthDoc, "youth pattern");
+            } catch (eYouthPat) {
+                // Not fatal: patternDocFor falls back to the adult document, and
+                // the pattern-piece pre-flight in Python has already confirmed
+                // the panels exist - so this degrades to the old single-file
+                // behaviour rather than abandoning the order.
+                log("WARNING: could not open the youth pattern file (" + eYouthPat.message +
+                    ") - youth sizes will fall back to the adult pattern.");
+                patternYouthDoc = null;
+            }
+        }
 
         var mockupDoc = app.open(new File(mockupPath));
         log("Mockup opened");
@@ -980,6 +1015,17 @@ function runAutomation() {
         //       two .ai files.
         //   parmErrors/parmBudgetUsed   - or parm_errors.txt reports only the
         //       last chunk, and the whole-job rebuild cap resets per chunk.
+        //   the four WARNING lists      - or every warnings report shows the
+        //       FINAL chunk's findings and nothing else. parmErrors was carried
+        //       from the start; these four were not, and the "CHUNK EXIT" block
+        //       is what made the loss invisible: the writers are already correct
+        //       (they run once, in the last chunk) but they were writing out an
+        //       array that had been emptied at every restart.
+        //       Measured on job Youth_w_adult_testing (2026-09-15, 7 chunks):
+        //       hoodie_warnings.txt listed 4XL and 5XL only. XS, Small and 3XL
+        //       had raised the SAME "no clipping group found" warning and it was
+        //       gone - which is exactly why 3XL read as a different bug from 4XL
+        //       when it was the same one.
         //   itemsProcessed              - or the progress bar drops back to 50%
         //       at every restart.
         var resumeStart = 0;
@@ -992,6 +1038,13 @@ function runAutomation() {
             exportFileCounters = resumeState.export_file_counters || {};
             parmErrors = resumeState.parm_errors || [];
             parmBudgetUsed = resumeState.parm_budget_used || 0;
+            // All four declared well above this point (686/772/858/859), so
+            // restoring them here is safe - a `var x = []` further down the main
+            // flow would run AFTER this and wipe the restore.
+            hoodieWarnings = resumeState.hoodie_warnings || [];
+            sleeveMatchWarnings = resumeState.sleeve_match_warnings || [];
+            backLabelWarnings = resumeState.back_label_warnings || [];
+            placketMatchWarnings = resumeState.placket_match_warnings || [];
             itemsProcessed = resumeState.items_processed || 0;
             log("=== RESUMED (chunk " + ((resumeState.chunk || 1) + 1) + ") after an Illustrator restart ===");
             log("RESUME: continuing at production group " + resumeStart + " of " +
@@ -3923,6 +3976,11 @@ function runAutomation() {
         };
         var key = (sizeLabel || "").toLowerCase().replace(/^\s+|\s+$/g, "");
         if (m[key]) return m[key];
+        // Toddler (4T) and infant month (6M) codes ARE their own tag letter,
+        // exactly like the youth codes in the map above. Without this they
+        // returned null and every such panel logged "no abbreviation for size"
+        // and kept the mockup's original letter.
+        if (/^[0-9]+[tm]$/.test(key)) return key.toUpperCase();
         if (key.indexOf("xl") !== -1) return key.toUpperCase(); // 5XL and beyond (and YXL) pass through
         return null;
     }
@@ -4018,9 +4076,42 @@ function runAutomation() {
             if (saveFile.exists) {
                 try { saveFile.remove(); } catch (eRm) { log("Note: could not remove existing " + name + ", saveAs will overwrite."); }
             }
-            orderDoc.saveAs(saveFile, new IllustratorSaveOptions());
+            // NO PDF-COMPATIBLE STREAM - the single biggest cost in the run.
+            //
+            // IllustratorSaveOptions defaults pdfCompatible to TRUE, which makes
+            // Illustrator write a COMPLETE second copy of the document as a PDF
+            // stream inside the .ai, alongside the native one. Measured on job
+            // Youth_w_adult_testing (2026-09-14): the mockup carries 595MB of
+            // already-embedded rasters, so every order file came out ~799MB and
+            // ONE saveAs took 5m40s - against 49s to export all seven of that
+            // file's JPEGs. Four sizes meant roughly 23 minutes of pure saving,
+            // about 85% of the per-size tail.
+            //
+            // Safe because these files are only ever opened in Illustrator,
+            // which reads its own native stream and ignores the PDF copy. That
+            // copy exists so OTHER software can read an .ai - a printer's RIP,
+            // placing it in InDesign, any PDF preview. If that ever becomes part
+            // of the workflow, THIS is the line to change back, and the files
+            // will be large and slow again for a reason.
+            var saveOpts = new IllustratorSaveOptions();
+            saveOpts.pdfCompatible = false;
+            // The default already, stated because it is the other half of what
+            // keeps the file down and must not be turned off by accident.
+            saveOpts.compressed = true;
+            // Refresh status.json immediately before the longest silent
+            // operation in the job. updateStatus was last written before the
+            // export flush, so without this the watchdog's staleness clock has
+            // already been running for the whole flush by the time the save
+            // starts - and the save is the part most likely to approach
+            // WATCHDOG_STALE_SECONDS on a very large order.
+            updateStatus("Saving " + name + " (large file, this takes a few minutes)...", 92, false);
+            var saveT0 = new Date().getTime();
+            orderDoc.saveAs(saveFile, saveOpts);
+            var saveSec = Math.round((new Date().getTime() - saveT0) / 1000);
             orderDocFiles.push(name);
-            log("AI file saved successfully: " + name);
+            // Timed on purpose: the save used to be measurable only as a gap
+            // between two unrelated log lines, which is how it stayed invisible.
+            log("AI file saved successfully: " + name + " (" + saveSec + "s, no PDF-compatible stream).");
         } catch (eSave) {
             log("SAVE ERROR (" + name + "): " + eSave.message);
         }
@@ -4164,6 +4255,14 @@ function runAutomation() {
                 '  "export_file_counters": ' + jsonNumMap(exportFileCounters) + ",\n" +
                 '  "parm_errors": ' + jsonStrList(parmErrors) + ",\n" +
                 '  "parm_budget_used": ' + parmBudgetUsed + ",\n" +
+                // Carried for the same reason as parm_errors: the warnings files
+                // are written once, by the final chunk, so anything an earlier
+                // chunk found has to travel here or it is simply gone. See the
+                // RESUME note for what that cost on Youth_w_adult_testing.
+                '  "hoodie_warnings": ' + jsonStrList(hoodieWarnings) + ",\n" +
+                '  "sleeve_match_warnings": ' + jsonStrList(sleeveMatchWarnings) + ",\n" +
+                '  "back_label_warnings": ' + jsonStrList(backLabelWarnings) + ",\n" +
+                '  "placket_match_warnings": ' + jsonStrList(placketMatchWarnings) + ",\n" +
                 '  "items_processed": ' + itemsProcessed + ",\n" +
                 '  "total_items": ' + totalItems + ",\n" +
                 '  "chunk": ' + chunkNumber + ",\n" +
@@ -4351,7 +4450,7 @@ function runAutomation() {
                 if (pmPrebuiltFullButton[sizeLabel] !== undefined) continue;
                 pmPrebuiltFullButton[sizeLabel] = null;
 
-                var backPatternObj = findAnywhere(patternDoc, sizeLabel + " Back");
+                var backPatternObj = findAnywhere(patternDocFor(sizeLabel), sizeLabel +" Back");
                 if (!backPatternObj) { log("PLACKET-MATCH: no '" + sizeLabel + " Back' pattern piece found - Front/Back will scale independently for this size."); continue; }
                 var panelRef = findPlacementPath(backPatternObj);
                 if (!panelRef) { log("PLACKET-MATCH: could not find Back's placement path for size '" + sizeLabel + "'."); continue; }
@@ -4524,11 +4623,11 @@ function runAutomation() {
             // canonical name is what feeds the height cache, the instance names,
             // the artboard names and the logs (see targetGroupName's note in the
             // main loop).
-            if (findAnywhere(patternDoc, sizeLabel + " Short Sleeve")) partLabel = "Short Sleeve";
-            else if (findAnywhere(patternDoc, sizeLabel + " Long Sleeve")) partLabel = "Long Sleeve";
-            else if (findAnywhere(patternDoc, sizeLabel + " SS")) partLabel = "Short Sleeve";
-            else if (findAnywhere(patternDoc, sizeLabel + " LS")) partLabel = "Long Sleeve";
-            else if (findAnywhere(patternDoc, sizeLabel + " Sleeve")) partLabel = "Sleeve";
+            if (findAnywhere(patternDocFor(sizeLabel), sizeLabel +" Short Sleeve")) partLabel = "Short Sleeve";
+            else if (findAnywhere(patternDocFor(sizeLabel), sizeLabel +" Long Sleeve")) partLabel = "Long Sleeve";
+            else if (findAnywhere(patternDocFor(sizeLabel), sizeLabel +" SS")) partLabel = "Short Sleeve";
+            else if (findAnywhere(patternDocFor(sizeLabel), sizeLabel +" LS")) partLabel = "Long Sleeve";
+            else if (findAnywhere(patternDocFor(sizeLabel), sizeLabel +" Sleeve")) partLabel = "Sleeve";
         }
         return partLabel;
     }
@@ -4636,7 +4735,15 @@ function runAutomation() {
             // ExtendScript's JS engine has no Array.prototype.indexOf (ES5) -
             // an object-key lookup works in every version instead.
             var youthSizeKeys = { "yxs": true, "ys": true, "ym": true, "yl": true, "yxl": true };
-            var isYouthSize = youthSizeKeys[(sizeLabel || "").toLowerCase().replace(/^\s+|\s+$/g, "")] === true;
+            var tagSizeKey = (sizeLabel || "").toLowerCase().replace(/^\s+|\s+$/g, "");
+            // Toddler (1T-10T) and infant month (1M-12M) take the SAME 2.5in tag
+            // as youth. They are smaller garments than YXS, so the adult 3in box
+            // overruns the panel - but this was an exact-key lookup over the five
+            // youth codes alone, so both families silently fell through to the
+            // adult branch and got a 3in box.
+            var isYouthSize = youthSizeKeys[tagSizeKey] === true
+                || /^[0-9]+t$/.test(tagSizeKey)
+                || /^[0-9]+m$/.test(tagSizeKey);
             var targetPt = (isYouthSize ? 2.5 : 3) * 72;
             var activeClip = findActiveClipPath(tagGroup);
             var refItem = activeClip || tagGroup;
@@ -11314,7 +11421,9 @@ function runAutomation() {
             "XXL": "2XL", "2XL": "2XL", "3XL": "3XL", "XXXL": "3XL", "4XL": "4XL", "XXXXL": "4XL",
             "YXS": "YXS", "YS": "YS", "YM": "YM", "YL": "YL", "YXL": "YXL",
             "1T": "1T", "2T": "2T", "3T": "3T", "4T": "4T", "5T": "5T",
-            "6T": "6T", "7T": "7T", "8T": "8T", "9T": "9T", "10T": "10T"
+            "6T": "6T", "7T": "7T", "8T": "8T", "9T": "9T", "10T": "10T",
+            "1M": "1M", "2M": "2M", "3M": "3M", "4M": "4M", "5M": "5M", "6M": "6M",
+            "7M": "7M", "8M": "8M", "9M": "9M", "10M": "10M", "11M": "11M", "12M": "12M"
         };
         return sizeCodes.map;
     }
@@ -11357,6 +11466,17 @@ function runAutomation() {
                 // sheet that already said "Toddler" often drops it.
                 if (/^[0-9]+$/.test(rest) && CODES[rest + "T"]) return CODES[rest + "T"];
             }
+            // INFANT MONTHS, same shape as TODDLER above: "Month 6", "Infant 6M".
+            if (head === "MONTH" || head === "MONTHS" || head === "MO" || head === "INFANT" || head === "BABY") {
+                if (CODES[rest]) return CODES[rest];
+                if (/^[0-9]+$/.test(rest) && CODES[rest + "M"]) return CODES[rest + "M"];
+            }
+            // TRAILING age word - "6 Months", "4 Toddler". Here the NUMBER is the
+            // head, which none of the branches above can read.
+            if (/^[0-9]+$/.test(head)) {
+                if ((rest === "MONTH" || rest === "MONTHS" || rest === "MO") && CODES[head + "M"]) return CODES[head + "M"];
+                if (rest === "TODDLER" && CODES[head + "T"]) return CODES[head + "T"];
+            }
         }
 
         // ADULT "A" PREFIX: some Excel sheets explicitly mark adult sizes
@@ -11367,6 +11487,15 @@ function runAutomation() {
         // no entry in SIZE_CODES starts with "A", so this never mis-strips a
         // real size name.
         if (flat.length > 1 && flat.charAt(0) === "A" && CODES[flat.substring(1)]) return CODES[flat.substring(1)];
+
+        // "6MO" / "6MONTHS" / "MONTH6" written with no space at all. A bare "6M"
+        // is already a SIZE_CODES key and was answered above, so only the
+        // spelled-out forms ever reach this line.
+        var mMon = /^(?:([0-9]+)(?:MO|MONTHS?)|(?:MONTHS?|MO)([0-9]+))$/.exec(flat);
+        if (mMon) {
+            var mNum = mMon[1] ? mMon[1] : mMon[2];
+            if (CODES[mNum + "M"]) return CODES[mNum + "M"];
+        }
         return s;
     }
 
@@ -11393,6 +11522,14 @@ function runAutomation() {
             add("Toddler " + sizeLabel);
             add("Toddler " + sizeLabel.substring(0, sizeLabel.length - 1));
         }
+        // Infant months: "6M" <-> "6 Months" / "6 Month" / "Month 6" / "Infant 6M"
+        if (/^[0-9]+M$/.test(up)) {
+            var monNum = sizeLabel.substring(0, sizeLabel.length - 1);
+            add(monNum + " Months");
+            add(monNum + " Month");
+            add("Month " + monNum);
+            add("Infant " + sizeLabel);
+        }
         // Adult: "XL" <-> "Adult XL" <-> "AXL", and the spelled-out words the
         // adult sizes canonically use ("Small" <-> "S" <-> "Adult Small").
         // EVERY short code that means this size, not just the first one found:
@@ -11402,7 +11539,11 @@ function runAutomation() {
         for (var k in CODES) {
             if (!CODES.hasOwnProperty(k)) continue;
             if (CODES[k] !== sizeLabel) continue;
-            if (k.charAt(0) === "Y" || /^[0-9]+T$/.test(k)) continue; // youth/toddler handled above
+            // Youth, toddler and month codes are all handled above and none of
+            // them belongs to the adult ladder. Without the month clause a 1M
+            // panel was also probed as "Adult 1M"/"A1M" - names no pattern file
+            // will ever carry.
+            if (k.charAt(0) === "Y" || /^[0-9]+[TM]$/.test(k)) continue;
             shorts.push(k);
         }
         if (shorts.length) {
@@ -11442,10 +11583,11 @@ function runAutomation() {
     // short-sleeve PATTERN piece is fabric in the bin. Guessing is worth less
     // than the CRITICAL line that says the piece was not found.
     //
-    // ORDERING: the canonical full-word name is always first. Combined with the
-    // loop order in findPatternPanel below, that means every pattern which
-    // resolves today resolves to the identical piece - the abbreviations are
-    // only ever reached after the full name has failed against every size alias.
+    // ORDERING: the canonical full-word name is first for the SLEEVES. Combined
+    // with the loop order in findPatternPanel below, that means every pattern
+    // which resolves today resolves to the identical piece - the abbreviations
+    // are only ever reached after the full name has failed against every size
+    // alias. Rib & Cuff is the one deliberate exception; see its own note.
     function partLabelAliases(partLabel) {
         var p = (partLabel || "").toLowerCase();
         if (p === "long sleeve")  return [partLabel, "LS", "Full Sleeve", "Sleeve LS"];
@@ -11455,14 +11597,67 @@ function runAutomation() {
         // length on them, so both abbreviations are offered on each side.
         if (p === "right sleeve") return [partLabel, "Sleeve Right", "SS Right", "Right SS", "LS Right", "Right LS"];
         if (p === "left sleeve")  return [partLabel, "Sleeve Left", "SS Left", "Left SS", "LS Left", "Left LS"];
+        // RIB & CUFF: the pattern side used to accept the ONE canonical spelling
+        // while the mockup side (getSourceView's ribTargets) had accepted all six
+        // for a long time. A pattern that names the panel "Medium Cuff" therefore
+        // found its DESIGN and not its PANEL - logged CRITICAL and shipped the
+        // order with no cuff in it. Same list as ribTargets, so the two sides
+        // finally understand the same words.
+        //
+        // "Cuff" FIRST, ahead of the canonical name, per explicit instruction -
+        // the only part where the canonical spelling is not probed first. It
+        // matters only for a pattern carrying BOTH "<Size> Rib & Cuff" and
+        // "<Size> Cuff" as separate groups, and there the short name is the one
+        // to cut. Bare "Rib" is accepted too (the lookup is size-scoped -
+        // "Medium Rib" - so it cannot collide with an unsized rib piece).
+        if (p === "rib & cuff") return ["Cuff", "Rib", partLabel, "Rib and Cuff", "Cuff & Rib", "Cuff and Rib"];
         return [partLabel];
+    }
+
+    // WHICH PATTERN FILE a size's panels are cut from. The youth .ai carries
+    // YXS-YXL, the toddler codes 1T-10T and the infant months 1M-12M; every
+    // other size comes from the adult .ai.
+    //
+    // Tested on the FRIENDLY label, never the raw Excel cell - "Toddler 4" and
+    // "6 Months" carry no leading Y and no trailing T/M until getFriendlySize
+    // has collapsed them to "4T"/"6M". Every caller below is already past that
+    // conversion. Mirrors is_youth_pattern_size in illustrator_automation.py;
+    // keep the two identical.
+    function isYouthPatternSize(sizeLabel) {
+        var up = String(sizeLabel == null ? "" : sizeLabel).toUpperCase().replace(/^\s+|\s+$/g, "");
+        if (up === "YXS" || up === "YS" || up === "YM" || up === "YL" || up === "YXL") return true;
+        if (/^[0-9]+[TM]$/.test(up)) return true;
+        // A spelling neither map knows but which still says "Youth" out loud.
+        return up.indexOf("YOUTH") === 0;
+    }
+
+    // The document to look this size's panels up in. Every fallback ends at
+    // patternDoc, so an order with only one pattern file behaves exactly as it
+    // did before two files existed.
+    function patternDocFor(sizeLabel) {
+        if (isYouthPatternSize(sizeLabel)) {
+            if (patternYouthDoc) return patternYouthDoc;
+            return patternAdultDoc || patternDoc;
+        }
+        if (patternAdultDoc) return patternAdultDoc;
+        return patternYouthDoc || patternDoc;
     }
 
     function findPatternPanel(sizeLabel, partLabel, isAcc) {
         if (isAcc || sizeLabel === "Universal") {
-            var accObj = findAnywhere(patternDoc, partLabel);
-            return accObj ? { obj: accObj, name: partLabel } : null;
+            // Size-independent piece: ONE shared panel for the whole order, so
+            // its name carries no size and there is nothing to route on. Adult
+            // file first, youth as the fallback - a mixed order only has to
+            // carry the accessory in ONE of its two pattern files.
+            var accDocs = [patternAdultDoc || patternDoc, patternYouthDoc];
+            for (var ad = 0; ad < accDocs.length; ad++) {
+                if (!accDocs[ad]) continue;
+                var accObj = findAnywhere(accDocs[ad], partLabel);
+                if (accObj) return { obj: accObj, name: partLabel };
+            }
+            return null;
         }
+        var sizeDoc = patternDocFor(sizeLabel);
         var alts = sizeAliases(sizeLabel);
         var parts = partLabelAliases(partLabel);
         // PART outer, SIZE inner: the canonical part name is exhausted against
@@ -11471,9 +11666,14 @@ function runAutomation() {
         for (var p = 0; p < parts.length; p++) {
             for (var i = 0; i < alts.length; i++) {
                 var nm = alts[i] + " " + parts[p];
-                var found = findAnywhere(patternDoc, nm);
+                var found = findAnywhere(sizeDoc, nm);
                 if (found) {
-                    if (i > 0 || p > 0) {
+                    // Tested against the CANONICAL spellings, not against the
+                    // loop indices: Rib & Cuff probes "Cuff" at p === 0, so an
+                    // index test would call the aliased match canonical and stay
+                    // silent on the one line a reader needs, while calling the
+                    // real canonical name an alias.
+                    if (i > 0 || parts[p] !== partLabel) {
                         log("PATTERN NAME: pattern calls this piece '" + nm + "' (the order asked for '" +
                             sizeLabel + " " + partLabel + "') - matched by alias.");
                     }
@@ -12345,7 +12545,7 @@ function runAutomation() {
     //   2. right 0.5in (by the measured overlap, capped at 0.5in)
     function hoodieResolveLocalTagVsPocket(sizeLabel, frontBaseShape, localTagGroup) {
         if (!localTagGroup || !frontBaseShape) return;
-        var pocketPiece = findAnywhere(patternDoc, sizeLabel + " Pocket");
+        var pocketPiece = findAnywhere(patternDocFor(sizeLabel), sizeLabel +" Pocket");
         if (!pocketPiece) return; // no Pocket for this size - nothing to clear
 
         var tmpPocket = null;
@@ -12707,6 +12907,10 @@ function runAutomation() {
             if (hostIsClipped) { clipHost = hostNode; break; }
             if (hostNode === dupPocket) break; // never walk out of the piece itself
         }
+        // Did the PATTERN give us a real clipping group, or is clipHost about to
+        // become the piece group as a fallback? The Paste-in-Back route below is
+        // only correct when this is true - see the route-choice note there.
+        var patternClipFound = (clipHost !== null);
         if (!clipHost) {
             // No designer-built clip anywhere around the outline - fall back to the
             // old behaviour, but say so instead of silently exporting a full-bleed
@@ -12764,7 +12968,26 @@ function runAutomation() {
         }
 
         var clipGroup = null, pastedBehindLabel = false;
-        var labelAnchor = hoodiePocketBackmostLabel(clipHost, pocketBaseShape);
+        // ROUTE CHOICE - and it must NOT be the size tag that decides it.
+        //
+        // Paste in Back clips nothing by itself. It drops the design inside
+        // clipHost, and the PATTERN's own mask is what confines it. Where the
+        // pattern has no clip, there is nothing to confine the design and this
+        // route produces an unclipped piece - while the fallback below builds a
+        // real mask and gets it right.
+        //
+        // This used to be gated on the label alone, so the presence of a SIZE TAG
+        // decided whether a pocket got clipped. Measured on job
+        // Youth_w_adult_testing (2026-09-15), whose pattern has no clipping group
+        // in XS, Small, 3XL, 4XL, 5XL or 6XL Pocket:
+        //   XS / Small / 6XL  no tag -> skipped this route, fell through to the
+        //                               fallback, which built a mask   -> CORRECT
+        //   3XL / 4XL / 5XL   a tag  -> took this route into an unclipped group,
+        //                               and because the paste "succeeded" the
+        //                               fallback never ran              -> UNCLIPPED
+        // Identical patterns, opposite results, decided by a text label. The
+        // presence of a real clip is what gates it now.
+        var labelAnchor = patternClipFound ? hoodiePocketBackmostLabel(clipHost, pocketBaseShape) : null;
         if (labelAnchor) {
             var stageGroup = null;
             try {
@@ -12921,7 +13144,7 @@ function runAutomation() {
     // Top-level HOODIE orchestrator, called once per size that had a Front
     // processed by the main loop (see hoodieFrontBySize caching above).
     function buildHoodieExtras(sizeLabel, frontState) {
-        var hoodGroup = findAnywhere(patternDoc, sizeLabel + " Hood");
+        var hoodGroup = findAnywhere(patternDocFor(sizeLabel), sizeLabel +" Hood");
         if (!hoodGroup) {
             hoodieWarnings.push(sizeLabel + ": no 'Hood' group found in pattern - Outside/Inside Hood skipped.");
         } else {
@@ -12940,7 +13163,7 @@ function runAutomation() {
             });
         }
 
-        var borderPiece = findAnywhere(patternDoc, sizeLabel + " Border");
+        var borderPiece = findAnywhere(patternDocFor(sizeLabel), sizeLabel +" Border");
         if (!borderPiece) {
             hoodieWarnings.push(sizeLabel + ": no 'Border' group found in pattern - Border skipped.");
         } else {
@@ -12953,7 +13176,7 @@ function runAutomation() {
         // one, so it must not warn about a missing 'Pocket' group either -
         // the piece is not missing, it is not part of the order.
         if (HOODIE_POCKET_ON) {
-            var pocketPiece = findAnywhere(patternDoc, sizeLabel + " Pocket");
+            var pocketPiece = findAnywhere(patternDocFor(sizeLabel), sizeLabel +" Pocket");
             if (!pocketPiece) {
                 hoodieWarnings.push(sizeLabel + ": no 'Pocket' group found in pattern - Pocket skipped.");
             } else {

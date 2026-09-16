@@ -219,10 +219,46 @@ function Section({
 const FIELD_LABELS: Record<string, string> = {
   excel_file: "Orders Excel",
   mockup_ai: "Design Mockup",
-  pattern_ai: "Master Pattern",
+  pattern_ai: "Adult Pattern",
+  pattern_youth_ai: "Youth Pattern",
   logo_library_ai: "Logo Library",
   fonts: "Required Fonts",
 };
+
+/** Sizes whose pattern pieces live in the YOUTH .ai rather than the adult one:
+ *  YXS-YXL, the toddler codes 1T-10T and the infant months 1M-12M.
+ *
+ *  Mirrors is_youth_pattern_size in illustrator_automation.py and
+ *  isYouthPatternSize in automate_production.jsx. This copy is deliberately
+ *  LOOSER than those two: they run after the size has been collapsed to its
+ *  canonical label, while this one sees the raw Excel cell ("Youth Small",
+ *  "Toddler 4", "6 Months"), so it accepts the spelled-out age words too.
+ *
+ *  It only decides which upload field to INSIST on. The agent re-derives the
+ *  same answer from the plan, and the pattern-piece pre-flight still has to
+ *  find each panel, so a wrong guess here shows up as a clear error, never as
+ *  a panel cut from the wrong pattern. */
+function isYouthSize(raw: string): boolean {
+  const s = raw.toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
+  if (/^(YXS|YS|YM|YL|YXL)$/.test(s.replace(/ /g, ""))) return true;
+  if (/^[0-9]+ ?[TM]$/.test(s)) return true;
+  return /^(YOUTH|TODDLER|INFANT|BABY)\b/.test(s) || /\b(MONTHS?|TODDLER)$/.test(s);
+}
+
+/** Which pattern files the plan's sizes require. The Universal accessories
+ *  group needs neither - its panels carry no size and are looked up in
+ *  whichever file the order already has. */
+function patternFilesNeeded(plan: { production_groups?: { size?: string }[] }) {
+  let adult = false;
+  let youth = false;
+  for (const group of plan.production_groups ?? []) {
+    const raw = String(group.size ?? "").trim();
+    if (!raw || raw.toLowerCase() === "universal") continue;
+    if (isYouthSize(raw)) youth = true;
+    else adult = true;
+  }
+  return { adult, youth };
+}
 
 /** True when the browser can no longer read a file it was handed earlier.
  *
@@ -423,6 +459,10 @@ export default function UploadForm({
       planForm.append("excel_file", formData.get("excel_file") as File);
       for (const [key, value] of formData.entries()) {
         if (key === "excel_file" || key === "mockup_ai" || key === "pattern_ai") continue;
+        // The youth pattern is the same ~135MB class of file as the adult one
+        // and the planner has no use for either - keep it off the network with
+        // the rest of the .ai files.
+        if (key === "pattern_youth_ai") continue;
         if (key === "logo_library_ai" || key === "fonts") continue;
         planForm.append(key, value);
       }
@@ -440,6 +480,37 @@ export default function UploadForm({
       }
       const { production_plan: plan } = await planRes.json();
 
+      // THE PATTERN FILES THIS ORDER'S SIZES REQUIRE. Checked here, between the
+      // plan and the upload, because this is the first moment the sizes are
+      // known and the last moment before ~270MB of .ai is copied across. The
+      // agent enforces the same rule from the same plan; this only spares the
+      // designer a transfer that would have been rejected.
+      const need = patternFilesNeeded(plan);
+      const hasAdult = (formData.get("pattern_ai") as File | null)?.size;
+      const hasYouth = (formData.get("pattern_youth_ai") as File | null)?.size;
+      if (!hasAdult && !hasYouth) {
+        fail(
+          "No pattern file selected",
+          "Every order needs at least one pattern file.",
+          "Pick the Adult Pattern, the Youth Pattern, or both - whichever ones this order's sizes are cut from.",
+          "warn"
+        );
+      }
+      const missing: string[] = [];
+      if (need.adult && !hasAdult) missing.push("Adult Pattern");
+      if (need.youth && !hasYouth) missing.push("Youth Pattern");
+      if (missing.length) {
+        const sizes = (plan.production_groups ?? [])
+          .map((g: { size?: string }) => String(g.size ?? ""))
+          .filter((s: string) => s && s.toLowerCase() !== "universal");
+        fail(
+          `${joinList(missing)} not selected`,
+          `This order contains ${sizes.join(", ")}, so it needs ${joinList(missing)}.`,
+          "Nothing was uploaded. Add the missing file above and press Generate again - or remove those sizes from the order sheet.",
+          "warn"
+        );
+      }
+
       // STEP 2 - the agent renders. THE .ai FILES GO HERE, NOT TO THE CLOUD.
       // This is a copy from one folder to another on the same machine, which
       // is why a 135MB pattern costs nothing.
@@ -447,7 +518,11 @@ export default function UploadForm({
       const jobForm = new FormData();
       jobForm.append("job_name", formData.get("job_name") as string);
       jobForm.append("plan_json", JSON.stringify(plan));
-      jobForm.append("pattern_ai", formData.get("pattern_ai") as File);
+      // Only the files that were actually picked: an empty file input still
+      // appears in FormData as a zero-byte File, and the agent reads a name-less
+      // upload as "not given".
+      if (hasAdult) jobForm.append("pattern_ai", formData.get("pattern_ai") as File);
+      if (hasYouth) jobForm.append("pattern_youth_ai", formData.get("pattern_youth_ai") as File);
       jobForm.append("mockup_ai", formData.get("mockup_ai") as File);
       const logo = formData.get("logo_library_ai");
       if (logo instanceof File && logo.size > 0) jobForm.append("logo_library_ai", logo);
@@ -547,14 +622,26 @@ export default function UploadForm({
               entry={picked["mockup_ai"]}
               onPick={onPick}
             />
+            {/* Adult and youth are graded in separate .ai files, so NEITHER is
+                marked required: an order can be adult-only, youth-only, or
+                both. Which ones this order actually needs is decided from its
+                own sizes once the plan comes back - see patternFilesNeeded. */}
             <FileDrop
               name="pattern_ai"
-              label="Master Pattern"
-              hint=".ai, graded cut pieces per size"
+              label="Adult Pattern"
+              hint=".ai, graded cut pieces - XS and up"
               accept=".ai"
-              required
               icon={<Icon.Pattern className="h-4 w-4" />}
               entry={picked["pattern_ai"]}
+              onPick={onPick}
+            />
+            <FileDrop
+              name="pattern_youth_ai"
+              label="Youth Pattern"
+              hint=".ai, youth YXS-YXL, toddler 1T-10T, months 1M-12M"
+              accept=".ai"
+              icon={<Icon.Pattern className="h-4 w-4" />}
+              entry={picked["pattern_youth_ai"]}
               onPick={onPick}
             />
             <FileDrop
