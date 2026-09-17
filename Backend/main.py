@@ -821,9 +821,10 @@ def _enforce_accessories(plan: Dict[str, Any], requested: List[str]) -> None:
         logger.info(f"Accessories added from checkboxes: {requested}")
 
 def _enforce_hoodie_rib_cuff(plan: Dict[str, Any], is_hoodie: bool) -> None:
-    """Hoodies always need their Rib & Cuff piece, and it scales with the
-    garment, so it is one item PER SIZE (like Patti, not like the shared
-    'Universal' accessories).
+    """Both hood garments always need their Rib & Cuff piece, and it scales with
+    the garment, so it is one item PER SIZE (like Patti, not like the shared
+    'Universal' accessories). Callers pass `any_hood`: Hoodie Jersey drops the
+    Pocket, not the cuff.
 
     It was never reaching the plan at all: the LLM is told not to invent
     accessory parts, no checkbox requests it, and the JSX's hoodie branch
@@ -1075,11 +1076,12 @@ async def _build_plan(
     _enforce_full_button_patti(plan_dict, opt["full_button_jersey"])
 
     # Hoodie: one Rib & Cuff item per size (same ordering requirement as Patti).
-    # Deliberately `hoodie` and NOT `any_hood`: a Hoodie Jersey does not get a
-    # Rib & Cuff auto-added, per explicit instruction. If an order needs one,
-    # the pattern piece is still reachable the normal way - this only decides
-    # what is added without being asked for.
-    _enforce_hoodie_rib_cuff(plan_dict, hoodie)
+    # `any_hood`, so a Hoodie Jersey gets one too. It was gated on `hoodie`
+    # alone until 2026-09-17, on the reading that a Hoodie Jersey does not carry
+    # one - it does. Nothing else could put the item in the plan either: the LLM
+    # is told not to invent accessory parts and no checkbox requests it, so that
+    # gate meant a Hoodie Jersey silently shipped with no Rib & Cuff at all.
+    _enforce_hoodie_rib_cuff(plan_dict, any_hood)
 
     plan_dict["match_sleeve_to_side"] = bool(opt["match_sleeve_to_side"])
     # HOW a unit may be corrected onto its target. Normalised here, same as

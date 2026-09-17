@@ -3,6 +3,7 @@
 import { useState, type ReactNode } from "react";
 import Link from "next/link";
 import AppHeader from "@/components/AppHeader";
+import { OPTION_DIAGRAMS } from "@/components/OptionDiagrams";
 import { Icon, Name, Panel, cn } from "@/components/ui";
 
 /* ------------------------------------------------------------------ data */
@@ -20,18 +21,35 @@ const CHAPTERS = [
 ];
 
 const MOCKUP_PARTS: Array<[string, string, string]> = [
-  ["Front panel", "Front", "Any job. Also accepts Front View."],
-  ["Back panel", "Back", "Any job. Also accepts Back View."],
-  ["Neck", "Neck", "Any job. Also accepts Collar or Rib."],
-  ["Sleeve", "Short Sleeve / Long Sleeve", "Left Sleeve and Right Sleeve are used when the two sides differ."],
-  ["Front halves", "Front Left / Front Right", "Full Button Jersey only."],
+  ["Front panel", "Front", "Any job. Front View also matches."],
+  ["Back panel", "Back", "Any job. Back View also matches."],
+  ["Neck", "Neck", "Any job. Collar and Rib also match."],
+  [
+    "Sleeve",
+    "Short Sleeve / Long Sleeve",
+    "SS and LS also match, and Full Sleeve means a long one. A bare Sleeve or Sleeves is the last thing tried, so a named length always wins over a shared group.",
+  ],
+  [
+    "Sleeve, per side",
+    "Left Sleeve / Right Sleeve",
+    "Used when the two sides differ. Sleeve Right, Right Short Sleeve, Short Sleeve Right, SS Right and Right SS all match too, and the same forms with LS or Long.",
+  ],
+  ["Front halves", "Front Left / Front Right", "Full Button Jersey only. Left Front and Right Front also match."],
   ["Button strip", "Patti", "Full Button Jersey only."],
-  ["Rib and cuff", "Rib & Cuff", "Takes the colour the designer drew. Rib Cuff and Cuff also match."],
+  [
+    "Rib and cuff",
+    "Rib & Cuff",
+    "Takes the colour the designer drew. Rib and Cuff, Cuff & Rib, Cuff and Rib, a bare Cuff and a bare Rib all match.",
+  ],
   ["Placket", "Placket", "Only when the Placket checkbox is ticked."],
   ["Twill tape", "Twill Tape", "Only when the Twill Tape checkbox is ticked."],
   ["Tukdi", "Tukdi", "Only when the Tukdi checkbox is ticked."],
-  ["Hood, outer", "Outside Hood", "Hoodie and Hoodie Jersey. Needs Left and Right child groups."],
-  ["Hood, inner", "Inside Hood", "Hoodie and Hoodie Jersey. Needs Left and Right child groups."],
+  [
+    "Hood, outer",
+    "Outside Hood",
+    "Hoodie and Hoodie Jersey. Hood Outside also matches. Needs one child carrying the word Left and one carrying Right - a size in the name is fine, so 2XL Right Hood works.",
+  ],
+  ["Hood, inner", "Inside Hood", "The same, and Hood Inside also matches."],
   ["Hood border", "Border", "Hoodie and Hoodie Jersey."],
 ];
 
@@ -39,15 +57,24 @@ const MOCKUP_TEXT: Array<[string, string, string]> = [
   [
     "Garment silhouette",
     "base-path",
-    "The single most important name. Every panel design group needs it, drawn at 3pt. The panel takes its fill and its scale from this path.",
+    "The single most important name. Every panel design group needs it, drawn at 3pt. The panel takes its fill and its scale from this path. base_path and basepath also match - but only those three spellings, so Base Path with a space does not.",
   ],
-  ["Player name", "NAME", "Any text frame whose name contains NAME. Filled from the Name columns."],
-  ["Player number", "NUMBER", "Any text frame whose name contains NUMBER. NUM and # also match."],
-  ["Logo slot", "LOGO", "Swapped for the group named in the Logo column of that row."],
+  ["Player name", "NAME", "Any text frame whose name contains NAME. PLAYER NAME and NAME_LAYER also match. Filled from the Name columns."],
+  ["Player number", "NUMBER", "Any text frame whose name contains NUMBER. PLAYER NUMBER, NUM and # also match."],
+  ["Logo slot", "LOGO", "Any item whose name contains logo. Swapped for the group named in the Logo column of that row."],
   ["Sleeve logos", "LEFT SLEEVE LOGO / RIGHT SLEEVE LOGO", "Used when the two sleeves carry different logos."],
   ["Size tag", "LOCAL TAG group with a SIZE text frame inside", "Only when the LOCAL TAG option is ticked. Both names are required."],
-  ["Back label", "Back Label", "Placed automatically when the name exists inside the Back design. No name means no label, nothing else changes."],
-  ["Sleeve bottom line", "rib / cuff / box", "Optional. Used by the Match sleeve bottom line option, which tries geometry first."],
+  [
+    "Back label",
+    "Back Label",
+    "Placed automatically when the name exists inside the Back design. Matched on a name STARTING with Back Label, so Back Label 2 works; only spaces are ignored here, so Back-Label does not. No name means no label, nothing else changes.",
+  ],
+  ["Sleeve bottom line", "rib / cuff / box", "Any item whose name contains one of those words. Used by the Match sleeve bottom line option, which tries geometry first."],
+  [
+    "Test print size tags",
+    "remove",
+    "Anything named remove, or starting with it, is deleted before the design is placed. This is where the small on-mockup size tags such as S-outside go, so they never ride along onto a cut piece.",
+  ],
 ];
 
 const MOCKUP_RESERVED: Array<[string, string]> = [
@@ -59,7 +86,7 @@ const MOCKUP_RESERVED: Array<[string, string]> = [
 const MOCKUP_MATCH: Array<[string, string, string]> = [
   ["Center design match", "Center", "Same name on Front Left and Front Right."],
   ["Pattern seam match", "Pattern", "Same name on Front Left and Front Right."],
-  ["Front and Back stripes", "Match_", "Any name starting with Match_, on both Front Left and Back."],
+  ["Front and Back stripes", "Match_", "Any name starting with Match, on both Front Left and Back - so Match_, Match_Front Right and a bare Match all count."],
   [
     "Side seam match",
     "Front side match + Back side match",
@@ -68,51 +95,78 @@ const MOCKUP_MATCH: Array<[string, string, string]> = [
   [
     "Armhole match",
     "armhole match group with unit 1, unit 2 inside",
-    "Needed on the Back view and on each sleeve view. Use unit left 1 and unit right 1 where the two sides are separate shapes.",
+    "The group name has to be exactly armhole match; anything inside it whose name starts with unit is collected. Needed on the Back view and on each sleeve view, and pieces pair by that number. Use unit left 1 and unit right 1 where the two sides are separate shapes - both still pair with the body's unit 1.",
   ],
   [
     "Side artwork kept on its seam",
-    "side, or side left / side right",
-    "Front and Back only, and only in the second design scaling mode. Name it, or write the word in the object Note when the name is already taken.",
+    "side, or side left / left side",
+    "Front and Back only, and only in the second design scaling mode. Either word order works, and a number may be added when a panel carries several, for example side 2. Name it, or write the word in the object Note when the name is already taken.",
   ],
   [
     "Shoulder band turned onto the shoulder line",
-    "shoulder, or shoulder left / shoulder right",
-    "Front and Back only. Always active, and it does nothing unless a piece carries the mark. Name it, or write the word in the object Note when the name is already taken.",
+    "shoulder, or shoulder left / left shoulder",
+    "Front and Back only. Always active, and it does nothing unless a piece carries the mark. Same spelling freedom as side above. Name it, or write the word in the object Note when the name is already taken.",
   ],
   [
     "Hood center match",
     "Center inside Outside Hood, in both the Right and the Left half",
     "The Right half copy is the one that is kept.",
   ],
+  [
+    "Team name held to its mockup width",
+    "team name",
+    "Any panel. Read by the Team name keeps its width option. Spelling is free - Team name, teamname and TEAM_NAME all count - and it may be numbered, for example team name 2. Name it, or write the words in the object Note when the name is already taken.",
+  ],
 ];
 
-const PATTERN_PARTS: Array<[string, string]> = [
-  ["Front", "XL Front"],
-  ["Back", "XL Back"],
-  ["Neck", "XL Neck"],
-  ["Front halves, Full Button Jersey", "XL Front Left, XL Front Right"],
-  ["Button strip, Full Button Jersey", "XL Patti"],
-  ["Sleeve", "XL Short Sleeve, XL Long Sleeve"],
-  ["Sleeve when sides differ", "XL Left Sleeve, XL Right Sleeve"],
-  ["Rib and cuff", "XL Rib & Cuff"],
-  ["Hood, Hoodie and Hoodie Jersey", "XL Hood, with Left and Right child groups"],
-  ["Pocket, Hoodie only", "XL Pocket"],
-  ["Border, Hoodie and Hoodie Jersey", "XL Border"],
+const PATTERN_PARTS: Array<[string, string, string]> = [
+  ["Front", "XL Front", "-"],
+  ["Back", "XL Back", "-"],
+  ["Neck", "XL Neck", "-"],
+  ["Front halves, Full Button Jersey", "XL Front Left, XL Front Right", "-"],
+  ["Button strip, Full Button Jersey", "XL Patti", "-"],
+  [
+    "Sleeve",
+    "XL Short Sleeve, XL Long Sleeve",
+    "XL SS, XL Half Sleeve, XL Sleeve SS for a short one; XL LS, XL Full Sleeve, XL Sleeve LS for a long one. Unlike the mockup there is NO bare XL Sleeve fallback and a short name never expands to the other length - cutting a long sleeve from a short-sleeve piece is fabric in the bin, so the job logs CRITICAL instead of guessing.",
+  ],
+  [
+    "Sleeve when sides differ",
+    "XL Left Sleeve, XL Right Sleeve",
+    "XL Sleeve Left, XL SS Left, XL Left SS, XL LS Left, XL Left LS, and the same forms on the right.",
+  ],
+  [
+    "Rib and cuff",
+    "XL Rib & Cuff",
+    "XL Cuff and XL Rib are tried FIRST, ahead of the canonical name, then XL Rib and Cuff, XL Cuff & Rib, XL Cuff and Rib. On a pattern carrying both XL Rib & Cuff and XL Cuff, the short one is the piece that gets cut.",
+  ],
+  [
+    "Hood, Hoodie and Hoodie Jersey",
+    "XL Hood",
+    "Needs one child carrying the word Left and one carrying Right. The size may be repeated on them, so XL Left Hood is fine.",
+  ],
+  ["Pocket, Hoodie only", "XL Pocket", "Never looked for on a Hoodie Jersey, so its absence is not a warning there."],
+  ["Border, Hoodie and Hoodie Jersey", "XL Border", "-"],
 ];
 
 const SIZE_WORDS: Array<[string, string, string]> = [
-  ["XS", "XS", "XS Front"],
-  ["S", "Small", "Small Front"],
-  ["M", "Medium", "Medium Front"],
-  ["L", "Large", "Large Front"],
-  ["XL", "XL", "XL Front"],
-  ["XXL or 2XL", "2XL", "2XL Front"],
-  ["XXXL or 3XL", "3XL", "3XL Front"],
-  ["XXXXL or 4XL", "4XL", "4XL Front"],
-  ["YXS, YS, YM, YL, YXL", "The same youth code", "YM Front"],
-  ["AXS, AS, AM, AL, AXL, A2XL", "The same code without the A", "AM becomes Medium Front"],
-  ["Anything else, for example 5XL", "Used exactly as written", "5XL Front"],
+  ["XS", "XS", "Adult XS, AXS"],
+  ["S, or Small", "Small", "S, Adult Small, Adult S, AS"],
+  ["M, Med, or Medium", "Medium", "M, Adult Medium, Adult M, AM"],
+  ["L, or Large", "Large", "L, Adult Large, Adult L, AL"],
+  ["XL", "XL", "Adult XL, AXL"],
+  ["XXL or 2XL", "2XL", "XXL, Adult 2XL, Adult XXL, A2XL, AXXL"],
+  ["XXXL or 3XL", "3XL", "XXXL, Adult 3XL, Adult XXXL, A3XL, AXXXL"],
+  ["XXXXL or 4XL", "4XL", "XXXXL, Adult 4XL, Adult XXXXL, A4XL, AXXXXL"],
+  [
+    "YXS, YS, YM, YL, YXL - or Youth XS, Youth Small",
+    "The same youth code",
+    "Youth M for YM, Youth XS for YXS, and so on. No Adult or A form is ever tried on a youth size.",
+  ],
+  ["1T to 10T - or Toddler 4", "The same toddler code", "Toddler 4T, Toddler 4"],
+  ["1M to 12M - or 6 Months, 6MO", "The same month code", "6 Months, 6 Month, Month 6, Infant 6M"],
+  ["AXS, AS, AM, AL, AXL, A2XL", "The same code without the A", "The A prefix just pairs visually with the youth Y; AM is Medium."],
+  ["Anything else, for example 5XL", "Used exactly as written", "Nothing extra is tried."],
 ];
 
 const OPTIONS: Array<{ name: string; does: string; needs: ReactNode; missing: string }> = [
@@ -175,7 +229,7 @@ const OPTIONS: Array<{ name: string; does: string; needs: ReactNode; missing: st
   },
   {
     name: "Hoodie Jersey",
-    does: "The same garment as Hoodie without the pocket. Runs the normal Front, Back and Sleeve flow (short or long sleeve) and additionally builds Outside Hood, Inside Hood and Border. The neck piece is dropped, since it has a hood. No Pocket is built, so the Local Tag also keeps its normal position instead of being shifted clear of one, and no Rib & Cuff is added automatically. Cannot be combined with Hoodie - checking one clears the other.",
+    does: "The same garment as Hoodie without the pocket. Runs the normal Front, Back and Sleeve flow (short or long sleeve) and additionally builds Outside Hood, Inside Hood and Border. The neck piece is dropped, since it has a hood. Like Hoodie, one Rib & Cuff is added per size automatically. The only difference is the Pocket: none is built, so the Local Tag also keeps its normal position instead of being shifted clear of one. Cannot be combined with Hoodie - checking one clears the other.",
     needs: (
       <>
         Pattern: <Name>{"{Size} Hood"}</Name> with <Name>Left</Name> and <Name>Right</Name>{" "}
@@ -211,6 +265,13 @@ const OPTIONS: Array<{ name: string; does: string; needs: ReactNode; missing: st
     missing: "The job pauses before rendering. Parts that cannot be matched are always rendered normally and listed at the end.",
   },
   {
+    name: "Armhole correction method",
+    does: "Decides how a unit is allowed to be corrected onto its target. Auto lets the machine choose: a unit left or unit right piece slides sideways, a centered unit slides up or down, and either is resized only when sliding cannot close the gap. The other three restrict it to one method - Left/right move only, Up/down move only, or Resize only, which scales the piece proportionally and never moves it.",
+    needs: "Nothing extra in the files. It only appears once Armhole side sleeve matching is ticked.",
+    missing:
+      "Not applicable, one of the four is always active and Auto is the default. Anything the chosen method cannot fix is left exactly as drawn and reported at the end, never corrected a different way.",
+  },
+  {
     name: "Front and Back side seam match",
     does: "Joins a design that crosses the torso side seam so it lines up across Front and Back, using a 14mm simulated sewing overlap.",
     needs: (
@@ -235,15 +296,31 @@ const OPTIONS: Array<{ name: string; does: string; needs: ReactNode; missing: st
     missing: "The job pauses before rendering. Continuing leaves every tag exactly as drawn in the mockup.",
   },
   {
-    name: "Neck contrast text",
-    does: "Forces the text, and any label, size or logo shape, on the Neck, Collar and Rib pieces to pure white or pure black, whichever reads against that panel color. It measures the panel fill, so a dark neck gets white text and a light neck gets black.",
+    name: "Get mockup neck Text color",
+    does: "Colors the text on the Neck, Collar and Rib pieces with the color the mockup's own neck uses - fill and stroke both, taken from the appearance, so text with no plain color still comes out right. Matching is word by word on the text itself.",
     needs: (
       <>
-        Nothing extra in the files. The panel color is read from the neck design group&apos;s{" "}
-        <Name>base-path</Name>, which every part needs anyway.
+        A group named <Name>Neck</Name> in the mockup, with the same wording as the
+        pattern&apos;s neck piece.
       </>
     ),
-    missing: "The neck renders exactly as drawn in the mockup and the pattern, with no recoloring at all.",
+    missing:
+      "A word with no match in the mockup is left exactly as the pattern drew it. Left unticked, no neck text is recolored at all.",
+  },
+  {
+    name: "Team name keeps its width",
+    does: "Puts the team name back on the width percentage it had in the mockup, on every size. The design is fitted by height, and patterns grade wider faster than they grade taller, so the team name keeps its height but covers less and less of the panel as sizes go up - measured on one real pattern, 65% of a Small front against 49% of a 6XL. It resizes proportionally, keeps its top edge where it was, and centers on the panel.",
+    needs: (
+      <>
+        The artwork marked <Name>team name</Name> in the mockup, either as the layer or group
+        name or in its Attributes <Name>Note</Name>. Spelling is free &mdash;{" "}
+        <Name>Team name</Name>, <Name>teamname</Name> and <Name>TEAM_NAME</Name> all count &mdash;
+        and it may be numbered, for example <Name>team name 2</Name>, when a panel carries more
+        than one.
+      </>
+    ),
+    missing:
+      "Nothing is resized and the job renders exactly as it did before the option existed. Anything else in the design is untouched either way.",
   },
   {
     name: "Logo personalization",
@@ -285,11 +362,18 @@ const OPTIONS: Array<{ name: string; does: string; needs: ReactNode; missing: st
     ),
     missing: "The part is left out of the plan entirely.",
   },
+  {
+    name: "Preview renders",
+    does: "Chooses what the job writes out. The default, AI file only, skips the render phase - which on a heavy mockup is most of the runtime - and produces a far smaller ZIP. The second mode additionally renders every piece to a 300 dpi JPEG under its size folder.",
+    needs: "Nothing extra in the files.",
+    missing:
+      "Not applicable, one of the two is always active. The Illustrator file is identical either way, with every piece on its own artboard, so previews can be exported from it by hand later.",
+  },
 ];
 
 const ZIP_FILES: Array<[string, string]> = [
   ["production_ready_order.ai", "The master Illustrator file with every piece laid out on its own artboard at production scale. A mockup over 5MB is split into one file per size instead - production_ready_order_Small.ai, _Medium.ai, and so on, with the shared accessories in the last one."],
-  ["{Size}/{Size}{N}.jpg", "A preview render of each exported piece, for checking before print. Filed under its size folder and numbered across the whole size - S/Small1.jpg to S/Small15.jpg, then L/Large1.jpg and so on. debug_log.txt carries the 'EXPORT NAME:' line saying which panel each number is. Absent when the job was started with Output set to 'AI file only' (step 06) - the Illustrator file is unchanged either way, and rendering these is most of a heavy job's runtime."],
+  ["{Size}/{Size}{N}.jpg", "A preview render of each exported piece, for checking before print. Filed under its size folder and numbered across the whole size - S/Small1.jpg to S/Small15.jpg, then L/Large1.jpg and so on. debug_log.txt carries the 'EXPORT NAME:' line saying which panel each number is. Present only when the job was started with Output set to 'AI file + JPEG previews' (step 06); the default skips them, because rendering them is most of a heavy job's runtime and the Illustrator file is unchanged either way."],
   ["production_plan.json", "The machine-readable plan the run was built from: sizes, parts, quantities and every text replacement."],
   ["debug_log.txt", "The full run log, including every measurement and every decision the script took."],
   ["sleeve_match_warnings.txt", "Present only when armhole matching had to skip a part."],
@@ -555,10 +639,16 @@ export default function Docs() {
                     "The approved test print. Every part view, its colours, its artwork and its text placeholders.",
                   ],
                   [
-                    "Master pattern",
+                    "Adult pattern",
                     ".ai",
-                    "Yes",
-                    "The graded cut pieces, one group per size and part.",
+                    "For adult sizes",
+                    "The graded cut pieces, one group per size and part, for XS and up.",
+                  ],
+                  [
+                    "Youth pattern",
+                    ".ai",
+                    "For youth sizes",
+                    "The same, for youth YXS-YXL, toddler 1T-10T and months 1M-12M. Adult and youth are graded in separate files, so an order attaches whichever ones its own sizes need - one, or both.",
                   ],
                   [
                     "Fonts",
@@ -685,6 +775,18 @@ export default function Docs() {
                 rows={MOCKUP_PARTS.map((r) => [r[0], <Name key={r[1]}>{r[1]}</Name>, r[2]])}
               />
 
+              <Note tone="warn">
+                <p>
+                  <strong>A part that finds none of its own names falls back to a group named{" "}
+                  <Name>LOGO</Name>.</strong> That fallback exists so a mockup built around one
+                  shared logo group still renders, but it also means a misspelt{" "}
+                  <Name>Back</Name> does not fail loudly - the Back panel quietly comes out
+                  carrying the logo artwork instead. Placket, Twill Tape, Tukdi and Rib &amp; Cuff
+                  are the exceptions: they look up their own group only, and render with the
+                  pattern file&apos;s own fill if it is missing.
+                </p>
+              </Note>
+
               <h3 className="pt-2 text-sm font-bold text-ink">Inside each design group</h3>
               <Table
                 head={["Purpose", "Name inside the part group", "Notes"]}
@@ -749,11 +851,11 @@ export default function Docs() {
               id="pattern"
               n="05"
               title="Pattern layer template"
-              intro="Every cut piece in the master pattern is found by the size word followed by the part name. XL Front, Medium Back, Large Short Sleeve, and so on."
+              intro="Every cut piece is found by the size word followed by the part name. XL Front, Medium Back, Large Short Sleeve, and so on. Which of the two pattern files is searched is decided by the size itself: youth, toddler and month codes go to the youth file, everything else to the adult one."
             >
               <Table
-                head={["Piece", "Group name, using XL as the example"]}
-                rows={PATTERN_PARTS.map((r) => [r[0], <Name key={r[1]}>{r[1]}</Name>])}
+                head={["Piece", "Group name, using XL as the example", "Other spellings accepted"]}
+                rows={PATTERN_PARTS.map((r) => [r[0], <Name key={r[1]}>{r[1]}</Name>, r[2]])}
               />
 
               <Note>
@@ -770,9 +872,19 @@ export default function Docs() {
                 Size code in the order sheet, size word in the pattern
               </h3>
               <Table
-                head={["Order sheet says", "Pattern prefix must be", "Example group"]}
-                rows={SIZE_WORDS.map((r) => [r[0], r[1], <Name key={r[2]}>{r[2]}</Name>])}
+                head={["Order sheet says", "Canonical pattern prefix", "Other prefixes the job will also find"]}
+                rows={SIZE_WORDS.map((r) => [r[0], <Name key={r[1]}>{r[1]}</Name>, r[2]])}
               />
+
+              <Note>
+                <p>
+                  <strong>The canonical prefix is what to aim for, not a rule.</strong> Every
+                  spelling in the third column is probed against the pattern file, and the run
+                  logs <Name>PATTERN NAME</Name> saying which one matched. The canonical part
+                  name is always tried against every size spelling before any abbreviation is,
+                  so a pattern that works today keeps resolving to exactly the same piece.
+                </p>
+              </Note>
 
               <Note>
                 <p>
@@ -789,7 +901,7 @@ export default function Docs() {
               id="options"
               n="06"
               title="Options reference"
-              intro="Every checkbox on the upload form, what it changes, what it needs in the files, and what happens when that is missing. Click a row to open it."
+              intro="Every checkbox on the upload form, what it changes, what it needs in the files, and what happens when that is missing. Click a row to open it - each one starts with a diagram of the same job without the option and with it."
             >
               <div className="space-y-2">
                 {OPTIONS.map((o) => {
@@ -814,6 +926,7 @@ export default function Docs() {
                       </button>
                       {isOpen && (
                         <div className="animate-fade-up space-y-3 border-t border-line px-5 py-4">
+                          {OPTION_DIAGRAMS[o.name]}
                           <div>
                             <p className="text-[0.6875rem] font-bold uppercase tracking-wider text-faint">
                               What it does

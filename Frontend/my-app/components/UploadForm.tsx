@@ -864,9 +864,9 @@ export default function UploadForm({
             flow &mdash; short or long sleeve &mdash; and additionally builds Outside Hood,
             Inside Hood and Border. No Pocket is built, so the Local Tag also stays at its
             normal position instead of being shifted clear of one. Like Hoodie, the neck panel
-            is dropped (the hood covers it) and sleeves default to long unless the Special
-            Instructions or the Excel <Name>Sleeve</Name> column say otherwise. Unlike Hoodie,
-            a Rib &amp; Cuff is <strong>not</strong> added automatically.
+            is dropped (the hood covers it), one Rib &amp; Cuff is added per size, and sleeves
+            default to long unless the Special Instructions or the Excel <Name>Sleeve</Name>{" "}
+            column say otherwise.
           </Toggle>
         </Section>
 
@@ -1143,28 +1143,28 @@ export default function UploadForm({
             <p className="text-sm font-semibold text-ink">Preview renders</p>
             <p className="mt-1 text-xs leading-relaxed text-muted">
               Rendering the JPEGs is by far the slowest part of a job &mdash; on a heavy mockup it
-              can be most of the total time. Skip it when you only need the Illustrator file.
+              can be most of the total time &mdash; so it is off by default. Turn it on when you
+              want previews to check before print.
             </p>
             <div className="mt-3 space-y-2.5">
               <RadioCard
                 name="export_mode"
-                value="ai_jpg"
+                value="ai_only"
                 defaultChecked
                 title={
                   <>
-                    AI file + JPEG previews{" "}
-                    <span className="font-normal text-faint">(default)</span>
+                    AI file only <span className="font-normal text-faint">(default)</span>
                   </>
                 }
               >
-                Every piece is rendered to a 300 dpi JPEG under its size folder, alongside the
-                Illustrator file. This is what jobs have always done.
-              </RadioCard>
-              <RadioCard name="export_mode" value="ai_only" title="AI file only">
                 No JPEGs at all. The order Illustrator file is still saved exactly the same way,
                 with every piece on its own artboard &mdash; you can export previews from it by
                 hand later if you need them. The ZIP comes out far smaller and the job finishes
                 much sooner.
+              </RadioCard>
+              <RadioCard name="export_mode" value="ai_jpg" title="AI file + JPEG previews">
+                Every piece is also rendered to a 300 dpi JPEG under its size folder, alongside
+                the Illustrator file. This is what jobs did by default until now.
               </RadioCard>
             </div>
           </div>
