@@ -1,0 +1,132 @@
+{
+  "_comment": "One table, read by BOTH test_py.py and test_jsx.js, so the JSX and the Python are checked against the same expectations and against each other.",
+
+  "friendly": {
+    "__women_adult__": "",
+    "W-XS": "W-XS", "W XS": "W-XS", "WXS": "W-XS", "w-xs": "W-XS", "W_XS": "W-XS",
+    "Women XS": "W-XS", "Womens XS": "W-XS", "Women's XS": "W-XS", "Ladies XS": "W-XS",
+    "Women Adult XS": "W-XS", "Adult Women XS": "W-XS", "W Adult XS": "W-XS",
+    "Women XSmall": "W-XS", "Women X-Small": "W-XS",
+
+    "W-S": "W-S", "WS": "W-S", "W S": "W-S", "Women S": "W-S", "Womens S": "W-S",
+    "Women Small": "W-S", "Womens Small": "W-S", "Women's Small": "W-S",
+    "Ladies Small": "W-S", "W Small": "W-S", "Women Adult Small": "W-S",
+    "Adult Womens S": "W-S",
+
+    "W-M": "W-M", "WM": "W-M", "W M": "W-M", "w.m": "W-M",
+    "Women M": "W-M", "Women Medium": "W-M", "Women Med": "W-M",
+    "Womens Medium": "W-M", "Women's M": "W-M", "Ladies M": "W-M",
+    "W Med": "W-M", "W Medium": "W-M", "Women Adult Med": "W-M",
+    "Adult Women Medium": "W-M",
+
+    "W-L": "W-L", "WL": "W-L", "W-Large": "W-L",
+    "Women L": "W-L", "Women Large": "W-L", "Womens Large": "W-L",
+    "Women's Large": "W-L", "Ladies Large": "W-L", "Ladies L": "W-L",
+    "W Large": "W-L", "W Lg": "W-L", "Women Lg": "W-L",
+    "Women Adult Large": "W-L", "Adult Women Large": "W-L", "Adult Womens L": "W-L",
+
+    "W-XL": "W-XL", "WXL": "W-XL", "Women XL": "W-XL", "Womens XL": "W-XL",
+    "Ladies XL": "W-XL", "Women X-Large": "W-XL", "W XLarge": "W-XL",
+    "Women Adult XL": "W-XL",
+
+    "W-2XL": "W-2XL", "W2XL": "W-2XL", "WXXL": "W-2XL", "W-XXL": "W-2XL",
+    "Women 2XL": "W-2XL", "Women XXL": "W-2XL", "Womens 2XL": "W-2XL",
+    "Women XXLarge": "W-2XL", "W 2X-Large": "W-2XL", "Ladies 2XL": "W-2XL",
+    "Women Adult 2XL": "W-2XL",
+
+    "__women_youth__": "",
+    "W-YXXS": "W-YXXS", "WYXXS": "W-YXXS", "W YXXS": "W-YXXS",
+    "Women YXXS": "W-YXXS", "Women Youth XXS": "W-YXXS",
+    "Youth Women XXS": "W-YXXS", "W Youth XXS": "W-YXXS",
+
+    "W-YXS": "W-YXS", "WYXS": "W-YXS", "Women Youth XS": "W-YXS",
+    "Womens Youth XS": "W-YXS", "Youth Womens XS": "W-YXS",
+
+    "W-YS": "W-YS", "WYS": "W-YS", "Women YS": "W-YS",
+    "Women Youth S": "W-YS", "Women Youth Small": "W-YS",
+    "Youth Women Small": "W-YS", "W Youth S": "W-YS",
+
+    "W-YM": "W-YM", "WYM": "W-YM", "W-Y M": "W-YM", "Women YM": "W-YM",
+    "Women Youth M": "W-YM", "Women Youth Medium": "W-YM",
+    "Womens Youth Medium": "W-YM", "Youth Women M": "W-YM",
+    "W Youth Med": "W-YM", "Ladies Youth M": "W-YM",
+
+    "W-YL": "W-YL", "WYL": "W-YL", "Women YL": "W-YL",
+    "Women Youth Large": "W-YL", "Womens Youth L": "W-YL",
+    "Youth Women Large": "W-YL", "W Youth Lg": "W-YL",
+
+    "W-YXL": "W-YXL", "WYXL": "W-YXL", "Women Youth XL": "W-YXL",
+    "Women Youth X-Large": "W-YXL", "Youth Women XL": "W-YXL",
+
+    "__adult_regression__": "",
+    "XS": "XS", "S": "Small", "Small": "Small", "M": "Medium", "Medium": "Medium",
+    "L": "Large", "Large": "Large", "XL": "XL", "XXL": "2XL", "2XL": "2XL",
+    "3XL": "3XL", "XXXL": "3XL", "4XL": "4XL", "XXXXL": "4XL",
+    "Adult M": "Medium", "Adult Med": "Medium", "Adult Large": "Large",
+    "AM": "Medium", "AS": "Small", "AXL": "XL", "A2XL": "2XL", "AXS": "XS",
+
+    "__newly_understood__": "",
+    "Med": "Medium", "med": "Medium", "Lg": "Large", "LG": "Large",
+    "X-Large": "XL", "XLarge": "XL", "Extra Large": "XL",
+    "XSmall": "XS", "X-Small": "XS", "Extra Small": "XS",
+    "XX-Large": "2XL", "XXLarge": "2XL", "2X-Large": "2XL",
+    "XXX-Large": "3XL", "Youth Lg": "YL", "Youth XLarge": "YXL",
+
+    "__youth_toddler_month_regression__": "",
+    "YXS": "YXS", "YS": "YS", "YM": "YM", "YL": "YL", "YXL": "YXL",
+    "Youth XS": "YXS", "Youth Small": "YS", "Youth M": "YM", "Youth-XS": "YXS",
+    "4T": "4T", "Toddler 4": "4T", "Toddler 4T": "4T", "4 Toddler": "4T",
+    "6M": "6M", "6 Months": "6M", "Month 6": "6M", "6MO": "6M",
+    "Infant 6M": "6M", "12M": "12M",
+
+    "__must_NOT_be_read_as_a_size__": "",
+    "White": "White", "Wide": "Wide", "W": "W", "Women": "Women",
+    "Ladies": "Ladies", "Universal": "Universal",
+    "__known_ambiguity__": "'Womens' is indistinguishable from 'Women S' once punctuation is dropped; resolved in favour of the size",
+    "Womens": "W-S", "Women's": "W-S", "Women S": "W-S",
+    "5XL": "5XL", "S/M": "S/M", "Sm": "Sm", "38": "38", "": ""
+  },
+
+  "youth_file": {
+    "__true__": ["YXS", "YS", "YM", "YL", "YXL", "Youth Small", "4T", "Toddler 4",
+                 "6M", "6 Months",
+                 "W-YXXS", "W-YXS", "W-YS", "W-YM", "W-YL", "W-YXL",
+                 "WYM", "Women Youth Large", "Youth Women M", "W Youth Lg"],
+    "__false__": ["XS", "Small", "Medium", "Large", "XL", "2XL", "Adult Large",
+                  "W-XS", "W-S", "W-M", "W-L", "W-XL", "W-2XL",
+                  "WM", "Women Large", "Women Adult Large", "Ladies L",
+                  "Universal", "5XL", "White"]
+  },
+
+  "aliases": {
+    "W-M": ["W-M", "W Medium", "Women M", "Women Medium", "Women Adult M",
+            "Women Adult Medium", "Womens M", "Womens Medium",
+            "Adult Women M", "Adult Women Medium", "Adult Womens M",
+            "Adult Womens Medium", "W Adult M", "W Adult Medium"],
+    "W-XS": ["W-XS", "Women XS", "Womens XS", "W Adult XS", "Women Adult XS",
+             "Womens Adult XS", "Adult Women XS", "Adult Womens XS"],
+    "W-2XL": ["W-2XL", "W XXL", "Women 2XL", "Women XXL", "Womens 2XL"],
+    "W-YM": ["W-YM", "W Youth M", "W Youth Medium", "Women YM", "Women Youth M",
+             "Women Youth Medium", "Womens YM", "Youth Women M",
+             "Youth Women Medium", "Youth Womens M"],
+    "W-YXXS": ["W-YXXS", "W Youth XXS", "Women YXXS", "Women Youth XXS",
+               "Youth Women XXS"],
+    "Medium": ["Medium", "Adult Medium", "M", "Adult M", "AM"],
+    "YXS": ["YXS", "Youth XS"],
+    "4T": ["4T", "Toddler 4T", "Toddler 4"]
+  },
+
+  "alias_must_not_contain": {
+    "W-M": ["Adult W-M", "AWM", "AW-M", "Youth W-M"],
+    "W-YM": ["Adult W-YM", "AWYM", "Adult Women YM"],
+    "Medium": ["W Medium", "Women Medium", "W-M"]
+  },
+
+  "sort": [
+    ["6M", "4T", "YXS", "W-YM", "XS", "W-L", "Universal"],
+    ["W-2XL", "Medium", "W-YXXS", "YXL", "2T", "Large", "W-YXL", "XS", "W-XS"],
+    ["Women Large", "Youth Women Small", "Adult Large", "Women Youth XL", "Small"],
+    ["W-YXXS", "W-YXS", "W-YS", "W-YM", "W-YL", "W-YXL"],
+    ["W-XS", "W-S", "W-M", "W-L", "W-XL", "W-2XL"]
+  ]
+}

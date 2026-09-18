@@ -123,6 +123,19 @@ function runAutomation() {
         // which matched neither "small" nor anything in the global list, so
         // Small hoods silently kept their pattern text while XL/2XL hoods
         // (tagged "XL"/"2XL", an exact match) renamed fine.
+        // Compared against normalizeSizeWord() output, so every entry is
+        // lowercase with ALL punctuation and spaces already stripped: "W-M",
+        // "W M" and "WM" are all the single key "wm".
+        //
+        // The women's groups carry the bare adult word too ("m", "medium"),
+        // because a women's pattern piece is usually tagged with the plain size
+        // letter - the "W-" only appears in the PANEL name. That is safe for the
+        // same reason the bare adult letters are: a group is only ever consulted
+        // for the size currently being processed.
+        //
+        // A bare "womens" is deliberately NOT in the W-S group: normalizeSizeWord
+        // collapses "Women's" and "Women S" to the same string, so it would let a
+        // possessive tag reading just "Women's" be overwritten as a size word.
         var SIZE_ALIAS_GROUPS = [
             ["xs", "xsmall", "extrasmall"],
             ["s", "small", "sm"],
@@ -132,7 +145,19 @@ function runAutomation() {
             ["2xl", "xxl", "2xlarge", "xxlarge", "extraextralarge"],
             ["3xl", "xxxl", "3xlarge", "xxxlarge"],
             ["4xl", "xxxxl", "4xlarge"],
-            ["5xl", "xxxxxl", "5xlarge"]
+            ["5xl", "xxxxxl", "5xlarge"],
+            ["wxs", "xs", "xsmall", "extrasmall", "womenxs", "womensxs", "ladiesxs"],
+            ["ws", "s", "small", "sm", "womensmall", "womenssmall", "ladiessmall"],
+            ["wm", "m", "medium", "med", "womenm", "womenmedium", "womensm", "womensmedium"],
+            ["wl", "l", "large", "lg", "womenl", "womenlarge", "womensl", "womenslarge"],
+            ["wxl", "xl", "xlarge", "extralarge", "womenxl", "womensxl", "ladiesxl"],
+            ["w2xl", "2xl", "xxl", "2xlarge", "xxlarge", "women2xl", "womenxxl", "womens2xl", "womensxxl"],
+            ["wyxxs", "yxxs", "xxs", "youthxxs", "womenyxxs", "womenyouthxxs"],
+            ["wyxs", "yxs", "youthxs", "womenyxs", "womenyouthxs"],
+            ["wys", "ys", "youths", "youthsmall", "womenys", "womenyouths"],
+            ["wym", "ym", "youthm", "youthmedium", "womenym", "womenyouthm"],
+            ["wyl", "yl", "youthl", "youthlarge", "womenyl", "womenyouthl"],
+            ["wyxl", "yxl", "youthxl", "womenyxl", "womenyouthxl"]
         ];
 
         updateStatus("Automation started", 40, false);
@@ -3622,7 +3647,18 @@ function runAutomation() {
                         var aliases = sizeAliasesFor(want);
                         if (aliases) { for (var a = 0; a < aliases.length; a++) if (c === aliases[a]) { isSizeWord = true; break; } }
                     }
-                    // 2) then any size word at all - the pattern's wording need
+                    // 2) then anything getFriendlySize reads as THIS size. The
+                    //    group above is a hand-written list and will always lag
+                    //    the parser, so ask the parser itself: a tag carrying the
+                    //    panel's own prefix ("Women Youth Large" on a W-YL piece,
+                    //    "Adult Women 2XL" on a W-2XL one) renames without the
+                    //    list having to name every spelling. Still scoped - a tag
+                    //    reading some OTHER size resolves to that size and fails
+                    //    this test, exactly as it fails the group test.
+                    if (!isSizeWord) {
+                        try { isSizeWord = (normalizeSizeWord(getFriendlySize(it.contents)) === want); } catch (eF) {}
+                    }
+                    // 3) then any size word at all - the pattern's wording need
                     //    not match the order's label ("X-Large" vs "XL")
                     if (!isSizeWord) { for (var w = 0; w < RENAME_SIZE_WORDS.length; w++) if (c === RENAME_SIZE_WORDS[w]) { isSizeWord = true; break; } }
                     if (isSizeWord) {
@@ -4734,7 +4770,15 @@ function runAutomation() {
         try {
             // ExtendScript's JS engine has no Array.prototype.indexOf (ES5) -
             // an object-key lookup works in every version instead.
-            var youthSizeKeys = { "yxs": true, "ys": true, "ym": true, "yl": true, "yxl": true };
+            // The youth women's codes take the 2.5in tag for the same reason the
+            // plain youth ones do - they are youth-graded panels. The women's
+            // ADULT codes (w-xs..w-2xl) are absent on purpose: they keep the 3in
+            // box like every other adult size.
+            var youthSizeKeys = {
+                "yxs": true, "ys": true, "ym": true, "yl": true, "yxl": true,
+                "w-yxxs": true, "w-yxs": true, "w-ys": true,
+                "w-ym": true, "w-yl": true, "w-yxl": true
+            };
             var tagSizeKey = (sizeLabel || "").toLowerCase().replace(/^\s+|\s+$/g, "");
             // Toddler (1T-10T) and infant month (1M-12M) take the SAME 2.5in tag
             // as youth. They are smaller garments than YXS, so the adult 3in box
@@ -11268,17 +11312,59 @@ function runAutomation() {
         return done;
     }
 
-    // Returns true only when the file was actually written. The old version
-    // returned nothing and caught every error into an empty block, so a failed
-    // render was indistinguishable from a successful one - see the queued-vs-
-    // written check in flushExports.
+    // CMYK JPEG, the only way Illustrator will give one to a script.
+    //
+    // `ExportOptionsJPEG` has NO colour-space property. Not "it is ignored" -
+    // it does not exist: `'imageColorSpace' in new ExportOptionsJPEG()` is
+    // false, and Adobe's own scripting guide lists eleven properties, none of
+    // them a colour model. Assigning it is the worst kind of no-op, because
+    // ExtendScript happily creates a plain JS property on the wrapper and
+    // READS IT BACK as CMYK, so the code looked correct and every render since
+    // has gone out RGB with nothing in the log. (Same family of false positive
+    // as the CompoundPathItem fill.)
+    //
+    // The Export As DIALOG does have the Image Color Model dropdown, and an
+    // Illustrator ACTION drives the dialog rather than the scripting API. So:
+    // write a temporary .aia carrying the dialog settings as raw bytes, load
+    // it, run it, unload it, delete it. Verified against the operator's own
+    // manual export of the same artboard - all 119,261,340 pixels identical,
+    // max difference 0 - and it is ~4x faster than exportFile was (13.5s vs
+    // 55s on a 10230x11658 panel), which matches Adobe's own report that
+    // scripted JPEG export is an order of magnitude slower than the dialog.
+    //
+    // Technique: Silly-V on the Adobe forums, via nathandietz/ExportDocAsJPEG.
+    //
+    // The 300 dpi tag is NOT lost by leaving exportFile: these files carry it
+    // in the APP13 Photoshop ResolutionInfo block (300.0 x 300.0) instead of
+    // APP0/JFIF. _stamp_jpeg_dpi() in illustrator_automation.py only knows how
+    // to patch APP0 and now logs "no JFIF header" for each one - harmless, the
+    // resolution is already correct in the file.
     function exportResult(doc, idx, folder, name) {
         var target = folder + "/" + name.replace(/[^a-zA-Z0-9]/g, '_') + ".jpg";
         try {
             doc.artboards.setActiveArtboardIndex(idx);
-            var opt = new ExportOptionsJPEG(); opt.artBoardClipping = true; opt.antiAliasing = true; opt.imageColorSpace = ImageColorSpace.CMYK;
-            // These four match the JPEG Options dialog the user exports by hand
-            // with, so a scripted render is the same file as a manual one.
+        } catch (e) {
+            log("EXPORT FAILED: " + target + " - could not select artboard " + idx + ": " + e.message);
+            return false;
+        }
+        if (exportJpegViaAction(doc, idx, folder, name, target)) return true;
+        // FALLBACK, deliberately kept: a broken .aia, a locked temp folder or a
+        // future Illustrator that rejects loadAction must not cost the whole
+        // order. The file is then RGB, which is wrong but recoverable - the
+        // operator can re-export that one panel by hand. Silence is not an
+        // option, so this says loudly which panel is affected.
+        //
+        // The fallback is also the reason this must never go quiet: an action
+        // whose parameter block is the wrong length still "succeeds" and still
+        // writes a file, just with the dialog's leftover settings. That is how
+        // the first version of this shipped RGB at 72 dpi. If CMYK ever stops
+        // coming out, suspect the blob length before anything else.
+        log("EXPORT: CMYK action route unavailable for " + name +
+            " - falling back to the RGB scripted export. THIS FILE WILL BE RGB.");
+        try {
+            var opt = new ExportOptionsJPEG();
+            opt.artBoardClipping = true;
+            opt.antiAliasing = true;
             // Print resolution: the scale is the ONLY dpi control ExportOptionsJPEG
             // exposes (no .resolution property), and 100% = 72 ppi. See EXPORT_DPI.
             opt.horizontalScale = EXPORT_SCALE_PCT; opt.verticalScale = EXPORT_SCALE_PCT;
@@ -11294,6 +11380,174 @@ function runAutomation() {
         } catch (e) {
             log("EXPORT FAILED: " + target + " - " + e.message);
             return false;
+        }
+    }
+
+    // Runs the Export As dialog through a throwaway action. Returns true only
+    // when a file actually landed at `target`.
+    //
+    // Every constant lives INSIDE the function on purpose: this file's `var`s
+    // are function-scoped and the main loop runs before this point in the
+    // source, so a constant declared next to exportResult would still read
+    // `undefined` when the loop calls it (see docs: JSX var hoisting / NaN).
+    function exportJpegViaAction(doc, idx, folder, name, target) {
+        // The dialog's settings, each a 32-bit little-endian value. Every value
+        // here is the one Illustrator itself recorded when the operator made
+        // the manual CMYK export these renders are measured against - copied,
+        // not chosen, so the output matches what they print today.
+        var IMAGE_QUALITY = 5;      // dialog slider; 5 is what the manual export used
+        var COMPRESSION = 1;        // 1 = Baseline (Standard)
+        var NUM_SCANS = 3;          // progressive only, unused at Baseline
+        // 1 = None, 2 = Art Optimized, 3 = Type Optimized. The manual export
+        // recorded 3, so 3 is what matches it. Type Optimized is ALSO the prime
+        // suspect for the 1px cyan hairline on flattened artwork - a separate,
+        // still-open question. Change it here, in one place, once that is
+        // settled; do not change it to "fix" colour.
+        var ANTI_ALIASING = 3;
+        var COLOR_MODEL_CMYK = 2;   // 1 = RGB, 2 = CMYK, 3 = Grayscale
+        // 0 = off. The old value of 2 left a stray .html imagemap beside every
+        // render in the one job this shipped to.
+        var IMAGE_MAP = 0;
+        var MAP_STYLE = 1;
+        var SET_NAME = "aiapparel_set";
+        var ACTION_NAME = "aiapparel_jpg";
+
+        function toHex2(n) { return ("0" + n.toString(16)).slice(-2); }
+        // UTF-16 code unit -> UTF-8 bytes, hex. The .aia stores every string
+        // this way, including the output path.
+        function u16to8(cd) {
+            if (cd < 0x80) return toHex2(cd);
+            if (cd < 0x800) return toHex2(cd >> 6 & 0x1f | 0xc0) + toHex2(cd & 0x3f | 0x80);
+            return toHex2(cd >> 12 | 0xe0) + toHex2(cd >> 6 & 0x3f | 0x80) + toHex2(cd & 0x3f | 0x80);
+        }
+        function hexStr(s) {
+            var out = "";
+            for (var i = 0; i < s.length; i++) out += u16to8(s.charCodeAt(i));
+            return out;
+        }
+        // 32-bit little-endian hex. Division, not bit shifts: the resolution
+        // value is dpi * 65536 and ES3 bitwise ops are signed 32-bit.
+        function le32(n) {
+            var out = "";
+            for (var i = 0; i < 4; i++) { out += toHex2(n % 256); n = Math.floor(n / 256); }
+            return out;
+        }
+        // Illustrator names a string parameter by byte count, then the hex.
+        function strParam(s) { var h = hexStr(s); return "[ " + (h.length / 2) + " " + h + " ]"; }
+
+        var tmpDir = null, aiaFile = null, loaded = false;
+        try {
+            // Export into an EMPTY folder of our own. With "Use Artboards" on,
+            // Illustrator appends the artboard's name to the file it writes
+            // (`5XL2.jpg` came back as `5XL2_5XL Back_Item1.jpg`), and that
+            // name is sanitised by rules we do not control. Taking whatever
+            // single file appears is exact; guessing the name is not.
+            tmpDir = new Folder(folder + "/.jpg_cmyk_tmp");
+            if (!tmpDir.exists && !tmpDir.create()) return false;
+            var stale = tmpDir.getFiles();
+            for (var s = 0; s < stale.length; s++) { try { stale[s].remove(); } catch (eS) {} }
+
+            var outPath = tmpDir.fsName + "\\" + name.replace(/[^a-zA-Z0-9]/g, '_') + ".jpg";
+            // THE BLOB IS 104 BYTES, NOT 100. This is the whole reason the
+            // first attempt silently failed. The widely-copied version of this
+            // technique (nathandietz/ExportDocAsJPEG) writes a 100-byte
+            // parameter; Illustrator 19.0.0 wants 104 and DISCARDS a parameter
+            // of the wrong length - without an error, and the export then runs
+            // on whatever the Export dialog was last set to. On a developer
+            // machine that had been set to CMYK/300 by hand, so it looked
+            // perfect; on a job's fresh Illustrator it wrote RGB at 72 dpi.
+            //
+            // These bytes come from an action recorded BY Illustrator on this
+            // exact version, not from a guess: 32 bytes of settings then 72
+            // bytes of buffer. The tail is reproduced verbatim - Illustrator
+            // left a fragment of a filename in it, which shows it is never read
+            // back, but its LENGTH is what the parser validates.
+            //
+            // Verified by asking one session for three different things and
+            // getting all three: CMYK/300 -> CMYK 833px, RGB/150 -> RGB 417px,
+            // Grayscale/600 -> L 1667px.
+            var TAIL =
+                "69006d006100670065006d006100700000006e005f0072006500610064007900" +
+                "5f006f0072006400650072005f00350058004c002d004500580050004f005200" +
+                "0000000000000000";
+            var settings = le32(IMAGE_QUALITY) + le32(COMPRESSION) + le32(NUM_SCANS) +
+                           le32(ANTI_ALIASING) + le32(EXPORT_DPI * 65536) +
+                           le32(COLOR_MODEL_CMYK) + le32(IMAGE_MAP) + le32(MAP_STYLE) +
+                           TAIL;
+
+            // Structure copied from that recording too: localizedName is
+            // "Export" (6 chars) on this version, not "Export As", and the
+            // string parameters carry showInPalette -1.
+            var aia = "" +
+            "/version 3" +
+            "/name " + strParam(SET_NAME) +
+            "/isOpen 1" +
+            "/actionCount 1" +
+            "/action-1 {" +
+              "/name " + strParam(ACTION_NAME) +
+              "/keyIndex 0" +
+              "/colorIndex 0" +
+              "/isOpen 1" +
+              "/eventCount 1" +
+              "/event-1 {" +
+                "/useRulersIn1stQuadrant 0" +
+                "/internalName (adobe_exportDocument)" +
+                "/localizedName [ 6 4578706f7274 ]" +         // "Export"
+                "/isOpen 1" +
+                "/isOn 1" +
+                "/hasDialog 1" +
+                "/showDialog 0" +                             // never block the job
+                "/parameterCount 7" +
+                "/parameter-1 { /key 1885434477 /showInPalette 0 /type (raw) /value < 104 " +
+                  settings + " > /size 104 }" +
+                "/parameter-2 { /key 1851878757 /showInPalette -1 /type (ustring) /value " +
+                  strParam(outPath) + " }" +
+                "/parameter-3 { /key 1718775156 /showInPalette -1 /type (ustring) " +
+                  "/value [ 16 4a5045472066696c6520666f726d6174 ] }" +   // "JPEG file format"
+                "/parameter-4 { /key 1702392942 /showInPalette -1 /type (ustring) " +
+                  "/value [ 12 6a70672c6a70652c6a706567 ] }" +          // "jpg,jpe,jpeg"
+                "/parameter-5 { /key 1936548194 /showInPalette -1 /type (boolean) /value 1 }" +
+                "/parameter-6 { /key 1935764588 /showInPalette -1 /type (boolean) /value 0 }" +
+                "/parameter-7 { /key 1936875886 /showInPalette -1 /type (ustring) /value " +
+                  strParam(String(idx + 1)) + " }" +          // artboard range, 1-based
+              "}" +
+            "}";
+
+            aiaFile = new File(Folder.temp + "/" + SET_NAME + ".aia");
+            if (!aiaFile.open("w")) { log("EXPORT: could not write " + aiaFile.fsName); return false; }
+            aiaFile.write(aia);
+            aiaFile.close();
+
+            // A set left loaded by a crashed run would come back as a second
+            // set with the same name, and doScript would run the stale one.
+            try { app.unloadAction(SET_NAME, ""); } catch (ePre) {}
+            app.loadAction(aiaFile);
+            loaded = true;
+            app.doScript(ACTION_NAME, SET_NAME, false);
+
+            var made = tmpDir.getFiles("*.jpg");
+            if (made.length !== 1) {
+                log("EXPORT: action wrote " + made.length + " file(s) for " + name +
+                    ", expected exactly 1.");
+                return false;
+            }
+            var dest = new File(target);
+            if (dest.exists) { try { dest.remove(); } catch (eD) {} }
+            // rename() moves within a folder only, so copy across then drop the
+            // original. 7-10MB, and it buys an exact filename.
+            if (!made[0].copy(target)) {
+                log("EXPORT: could not move the rendered JPG to " + target);
+                return false;
+            }
+            try { made[0].remove(); } catch (eR) {}
+            return dest.exists;
+        } catch (e) {
+            log("EXPORT: CMYK action failed for " + name + " - " + e.message);
+            return false;
+        } finally {
+            if (loaded) { try { app.unloadAction(SET_NAME, ""); } catch (eU) {} }
+            if (aiaFile) { try { aiaFile.remove(); } catch (eF) {} }
+            if (tmpDir) { try { tmpDir.remove(); } catch (eT) {} }
         }
     }
 
@@ -11423,15 +11677,138 @@ function runAutomation() {
             "1T": "1T", "2T": "2T", "3T": "3T", "4T": "4T", "5T": "5T",
             "6T": "6T", "7T": "7T", "8T": "8T", "9T": "9T", "10T": "10T",
             "1M": "1M", "2M": "2M", "3M": "3M", "4M": "4M", "5M": "5M", "6M": "6M",
-            "7M": "7M", "8M": "8M", "9M": "9M", "10M": "10M", "11M": "11M", "12M": "12M"
+            "7M": "7M", "8M": "8M", "9M": "9M", "10M": "10M", "11M": "11M", "12M": "12M",
+            // WOMEN'S LADDER. Like youth, the label IS the code - the panels are
+            // named "W-M Front", not "Women Medium Front". The keys here are the
+            // PUNCTUATION-FREE spelling because getFriendlySize looks the flat
+            // form up as well, which is what makes "W-M", "W M" and "WM" one key.
+            //
+            // No other entry in this map starts with "W", which is what lets the
+            // women's prefix rule in getFriendlySize strip a leading W without
+            // ever mis-reading a real size name.
+            "WXS": "W-XS", "WS": "W-S", "WM": "W-M", "WL": "W-L", "WXL": "W-XL",
+            "W2XL": "W-2XL", "WXXL": "W-2XL",
+            "WYXXS": "W-YXXS", "WYXS": "W-YXS", "WYS": "W-YS",
+            "WYM": "W-YM", "WYL": "W-YL", "WYXL": "W-YXL"
         };
         return sizeCodes.map;
     }
     // Spelled-out words that mean a bare size code, so "Youth Small" resolves
     // the same way "Youth S" does. Same hoisting rule as above.
+    //
+    // This used to hold four entries (SMALL/MED/MEDIUM/LARGE) and was only ever
+    // consulted on what FOLLOWS an age word, so a sheet that simply said "Med",
+    // "Lg" or "X-Large" reached none of it: getFriendlySize returned the cell
+    // untouched and the run then looked for a panel called "Med Front". The
+    // abbreviations were already listed in RENAME_SIZE_WORDS at the top of this
+    // file, so the same sheet renamed its size tags correctly while failing to
+    // find the piece to rename.
     function sizeWords() {
-        if (!sizeWords.map) sizeWords.map = { "SMALL": "S", "MED": "M", "MEDIUM": "M", "LARGE": "L" };
+        if (!sizeWords.map) sizeWords.map = {
+            // "SM" is deliberately ABSENT. It is the one abbreviation here that
+            // is genuinely ambiguous: a sheet writing "S/M" for a combined
+            // small-medium garment flattens to the same "SM" as one writing "Sm"
+            // for Small, and answering that with Small would cut the wrong panel
+            // silently. Left unknown, it falls through and the run pauses.
+            "XSMALL": "XS", "EXTRASMALL": "XS",
+            "SMALL": "S",
+            "MED": "M", "MEDIUM": "M",
+            "LARGE": "L", "LG": "L",
+            "XLARGE": "XL", "EXTRALARGE": "XL",
+            "XXLARGE": "2XL", "2XLARGE": "2XL", "EXTRAEXTRALARGE": "2XL",
+            "XXXLARGE": "3XL", "3XLARGE": "3XL",
+            "XXXXLARGE": "4XL", "4XLARGE": "4XL"
+        };
         return sizeWords.map;
+    }
+
+    // Prefixes that mark a women's size, longest first.
+    function womenHeads() {
+        if (!womenHeads.list) womenHeads.list = ["WOMENS", "WOMEN", "LADIES", "W"];
+        return womenHeads.list;
+    }
+
+    // The canonical women's label for an already-flattened size string
+    // (uppercase, every non-alphanumeric removed), or "" if it is not one.
+    //
+    // EVERY prefix that fits is tried, not just the first: "WOMENSMALL" is
+    // "WOMENS" + "MALL" (nothing) or "WOMEN" + "SMALL" (W-S), so stopping at the
+    // first prefix that matched the text would answer "Women Small" with nothing.
+    //
+    // The age word is accepted on EITHER side of the women's word - both "Women
+    // Adult Large" and "Adult Women Large" get written - and ADULT is treated as
+    // noise the way the plain ladder treats it (AM == M), since the women's
+    // ladder is adult unless the code says YOUTH.
+    //
+    // Returns "" rather than guessing: what is left after the words come off must
+    // ALREADY be a known code, so "WHITE" parses as W + "HITE", misses, and the
+    // caller falls through with the original string untouched.
+    // Mirrors _women_size in illustrator_automation.py.
+    function womenSize(flat) {
+        var CODES = sizeCodes(), WORDS = sizeWords();
+        var HEADS = womenHeads(), LEADS = ["", "YOUTH", "ADULT"];
+        // KNOWN AMBIGUITY, resolved in favour of the size: "Women S" and the
+        // possessive "Women's" both flatten to "WOMENS", so a cell holding
+        // nothing but the word "Womens" reads as W-S. "Women S" is a spelling a
+        // customer really types in a Size column; a bare "Womens" is a malformed
+        // cell carrying no size at all, so it is wrong either way. The
+        // unambiguous heads need no guard - "Women", "Ladies" and "W" alone leave
+        // nothing that is a code, so they already fall through untouched.
+        for (var h = 0; h < HEADS.length; h++) {
+            for (var l = 0; l < LEADS.length; l++) {
+                var pre = LEADS[l] + HEADS[h];
+                if (flat.substring(0, pre.length) !== pre) continue;
+                var rest = flat.substring(pre.length), trail = "";
+                if (rest.substring(0, 5) === "YOUTH") { trail = "YOUTH"; rest = rest.substring(5); }
+                else if (rest.substring(0, 5) === "ADULT") { trail = "ADULT"; rest = rest.substring(5); }
+                var age = "";
+                if (LEADS[l] === "YOUTH" || trail === "YOUTH") age = "Y";
+                if (WORDS[rest]) rest = WORDS[rest];
+                if (CODES["W" + age + rest]) return CODES["W" + age + rest];
+            }
+        }
+        return "";
+    }
+
+    // Every spelling of ONE women's size a pattern file might carry, for a label
+    // already known to start "W-".
+    //
+    // "W M" and "WM" are NOT generated: findAnywhere drops all punctuation before
+    // it looks anything up, so they are the same key as the canonical "W-M" and
+    // would only cost a repeated probe. "Adult" appears only on the adult codes -
+    // it is what distinguishes them from the W-Y ones and says nothing on a youth
+    // size. Mirrors _women_aliases in illustrator_automation.py.
+    function womenAliases(sizeLabel) {
+        var body = String(sizeLabel).substring(2);   // "M", "2XL", "YM", "YXXS"
+        var bu = body.toUpperCase();
+        var WORD = { "S": "Small", "M": "Medium", "L": "Large", "2XL": "XXL" };
+        var codes, ageBodies, ageHeads;
+        if (bu.length > 1 && bu.charAt(0) === "Y") {
+            var tail = body.substring(1);            // "M", "XXS"
+            codes = [body, "Youth " + tail];
+            ageBodies = [tail];
+            if (WORD[tail.toUpperCase()]) {
+                codes.push("Youth " + WORD[tail.toUpperCase()]);
+                ageBodies.push(WORD[tail.toUpperCase()]);
+            }
+            ageHeads = ["Youth Women ", "Youth Womens "];
+        } else {
+            ageBodies = [body];
+            if (WORD[bu]) ageBodies.push(WORD[bu]);
+            codes = [];
+            for (var c = 0; c < ageBodies.length; c++) codes.push(ageBodies[c]);
+            for (var c2 = 0; c2 < ageBodies.length; c2++) codes.push("Adult " + ageBodies[c2]);
+            ageHeads = ["Adult Women ", "Adult Womens "];
+        }
+        var out = [];
+        var HEADS = ["W ", "Women ", "Womens "];
+        for (var i = 0; i < HEADS.length; i++) {
+            for (var j = 0; j < codes.length; j++) out.push(HEADS[i] + codes[j]);
+        }
+        for (var k = 0; k < ageHeads.length; k++) {
+            for (var m = 0; m < ageBodies.length; m++) out.push(ageHeads[k] + ageBodies[m]);
+        }
+        return out;
     }
 
     function getFriendlySize(s) {
@@ -11446,6 +11823,13 @@ function runAutomation() {
 
         var flat = up.replace(/ /g, "");
         if (CODES[flat]) return CODES[flat];
+
+        // A spelled-out size with NO age word in front of it - "Med", "Lg",
+        // "X-Large", "XX Large". The age-word branch below runs its `rest`
+        // through the same table, so "Adult Med" always worked; a bare "Med"
+        // never reached it and was handed on as a panel name.
+        var BARE = sizeWords();
+        if (BARE[flat] && CODES[BARE[flat]]) return CODES[BARE[flat]];
 
         // SPELLED-OUT AGE GROUP. "Youth XS" is the same garment as "YXS", and
         // "Adult XL" the same as "AXL"/"XL" - both spellings turn up because the
@@ -11488,6 +11872,20 @@ function runAutomation() {
         // real size name.
         if (flat.length > 1 && flat.charAt(0) === "A" && CODES[flat.substring(1)]) return CODES[flat.substring(1)];
 
+        // WOMEN'S SIZES. Matched on `flat` - the punctuation-free spelling -
+        // rather than on the head/rest split above, because the split cannot read
+        // the possessive: "Women's Large" normalises to "WOMEN S LARGE", whose
+        // head is "WOMEN" and whose rest is "SLARGE". On `flat` it is simply
+        // "WOMENSLARGE" and the prefix comes off cleanly.
+        //
+        // The age word is optional and consumed exactly as YOUTH/ADULT are above
+        // ("Women Youth M" == "W-YM"), and what is left must ALREADY be a known
+        // code - "WHITE" parses as W + "HITE", finds nothing, and falls through
+        // untouched rather than being guessed at.
+        //
+        var wLabel = womenSize(flat);
+        if (wLabel) return wLabel;
+
         // "6MO" / "6MONTHS" / "MONTH6" written with no space at all. A bare "6M"
         // is already a SIZE_CODES key and was answered above, so only the
         // spelled-out forms ever reach this line.
@@ -11529,6 +11927,19 @@ function runAutomation() {
             add(monNum + " Month");
             add("Month " + monNum);
             add("Infant " + sizeLabel);
+        }
+        // Women's sizes take none of the youth/toddler/month/adult spellings
+        // below, so they are answered by womenAliases and returned.
+        if (up.length > 2 && up.substring(0, 2) === "W-") {
+            var wAll = womenAliases(sizeLabel);
+            for (var wi = 0; wi < wAll.length; wi++) {
+                // "W M" is the canonical "W-M" with a space where the hyphen is,
+                // and findAnywhere ignores punctuation - the same key, one
+                // wasted probe.
+                if (wAll[wi].replace(/ /g, "").toUpperCase() === up.replace(/-/g, "")) continue;
+                add(wAll[wi]);
+            }
+            return out;
         }
         // Adult: "XL" <-> "Adult XL" <-> "AXL", and the spelled-out words the
         // adult sizes canonically use ("Small" <-> "S" <-> "Adult Small").
@@ -11627,6 +12038,11 @@ function runAutomation() {
         var up = String(sizeLabel == null ? "" : sizeLabel).toUpperCase().replace(/^\s+|\s+$/g, "");
         if (up === "YXS" || up === "YS" || up === "YM" || up === "YL" || up === "YXL") return true;
         if (/^[0-9]+[TM]$/.test(up)) return true;
+        // The youth women's codes are graded in the YOUTH file beside the plain
+        // youth ones; W-XS..W-2XL stay in the adult file. Tested on the "W-Y"
+        // prefix rather than the five codes, so W-YXXS - which has no plain-youth
+        // counterpart - is routed by the same rule as the rest.
+        if (up.substring(0, 3) === "W-Y") return true;
         // A spelling neither map knows but which still says "Youth" out loud.
         return up.indexOf("YOUTH") === 0;
     }

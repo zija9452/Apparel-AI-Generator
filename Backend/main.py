@@ -279,18 +279,29 @@ ApparelOrchestratorAgent = Agent(
 )
 
 def _norm_size(s: str) -> str:
-    s = str(s).lower().strip().replace(" ", "").replace("-", "").replace("_", "")
-    aliases = {
-        "xs": "xsmall", "extrasmall": "xsmall",
-        "s": "small", "sm": "small",
-        "m": "medium", "med": "medium",
-        "l": "large", "lg": "large",
-        "xl": "xlarge", "extralarge": "xlarge",
-        "xxl": "2xlarge", "2xl": "2xlarge",
-        "xxxl": "3xlarge", "3xl": "3xlarge",
-        "xxxxl": "4xlarge", "4xl": "4xlarge",
-    }
-    return aliases.get(s, s)
+    """The key that pairs a plan group back to its Excel rows.
+
+    Both sides go through this, so it only has to be CONSISTENT - but the two
+    sides are written by different authors: the Excel cell is whatever the
+    customer typed and the group's size is whatever the LLM echoed back. A
+    spelling one side normalises and the other does not means _enforce_
+    personalization finds no rows, skips silently, and leaves every player in
+    that size wearing the first player's name.
+
+    This used to carry its own alias table - a dozen adult spellings, and nothing
+    else. Every family the table did not list paired only when BOTH sides happened
+    to spell the size identically:
+
+        "Adult Large" vs "Large"   "Youth Small" vs "YS"   "AM" vs "Medium"
+        "Toddler 4" vs "4T"        "6 Months" vs "6M"
+
+    Each of those is a silent wrong order, not an error. The women's ladder would
+    have added a dozen more, so the table is gone and the key is now _size_rank
+    itself: it already reads every family, and two spellings of ONE size rank
+    identically by construction. A size it does not recognise keeps its own text
+    in the tuple's third slot, so unknown sizes still pair only with themselves.
+    """
+    return str(_size_rank(s))
 
 # ---------------------------------------------------------------------------
 # SIZE ORDER
@@ -302,10 +313,11 @@ def _norm_size(s: str) -> str:
 
 # Every adult size, smallest first. Youth sizes reuse the same ladder with the
 # youth flag, so a YXL still sorts before an adult XS.
-_SIZE_SEQUENCE = ["xs", "s", "m", "l", "xl", "2xl", "3xl", "4xl", "5xl", "6xl"]
+_SIZE_SEQUENCE = ["xxs", "xs", "s", "m", "l", "xl", "2xl", "3xl", "4xl", "5xl", "6xl"]
 
 # Spelled-out / doubled-letter spellings -> the ladder's own code.
 _SIZE_WORDS = {
+    "2xs": "xxs", "xxsmall": "xxs", "extraextrasmall": "xxs",
     "xsmall": "xs", "extrasmall": "xs",
     "small": "s", "sm": "s",
     "medium": "m", "med": "m",
@@ -334,8 +346,56 @@ def _size_code(s: str) -> Optional[str]:
 # sort puts "10m" before "2m", which would ship the ladder out of order.
 # Neither pattern can collide with an adult size - no adult code is digits
 # followed by a bare 'm' or 't'.
-_MONTH_RE = re.compile(r"^(?:(?:months?|mos?|infant|baby)([0-9]+)|([0-9]+)(?:m|mo|months?))$")
+# The trailing "m?" is what lets "Infant 6M" through. Without it only the
+# word-first forms that DROP the unit ("Infant 6", "Month 6") matched, so
+# "Infant 6M" - the spelling _size_aliases itself generates, and the one a sheet
+# writing "Infant" is most likely to use - fell into the unknown bucket and
+# sorted after every adult size. The toddler pattern below has always had the
+# matching "t?"; this one was simply missing its half.
+_MONTH_RE = re.compile(r"^(?:(?:months?|mos?|infant|baby)([0-9]+)m?|([0-9]+)(?:m|mo|months?))$")
 _TODDLER_RE = re.compile(r"^(?:toddler([0-9]+)t?|([0-9]+)(?:t|toddler))$")
+
+# Prefixes that mark a women's size, longest first. Mirrors _WOMEN_HEADS in
+# services/illustrator_automation.py and womenHeads() in the JSX - all three read
+# the same cells, so a spelling one of them accepts and another does not shows up
+# as a group sorted into the wrong block.
+_WOMEN_PREFIXES = ("womens", "women", "ladies", "w")
+
+
+def _women_rank(s):
+    """(is_youth, ladder_code) for a women's size, else None.
+
+    `s` is the already-normalised body (lowercased, spaces and punctuation
+    removed), so "W-L", "Women Large" and "Ladies L" all arrive here as something
+    this can read. The age word is accepted on either side of the women's word,
+    and ADULT is noise - the women's ladder is adult unless it says youth.
+
+    EVERY prefix that fits is tried, not just the first: "womensmall" is
+    "womens" + "mall" (nothing) or "women" + "small" (W-S).
+    """
+    # "women s" and the possessive "women's" both flatten to "womens", so a cell
+    # holding nothing but "Womens" ranks as W-S. Deliberate, and the same call
+    # _women_size makes in services/illustrator_automation.py - the two must
+    # agree or a group sorts into a block its panels are not cut from.
+    for head in _WOMEN_PREFIXES:
+        for lead in ("", "youth", "adult"):
+            if not s.startswith(lead + head):
+                continue
+            rest, trail = s[len(lead) + len(head):], ""
+            for word in ("youth", "adult"):
+                if rest.startswith(word):
+                    trail, rest = word, rest[len(word):]
+                    break
+            youth = (lead or trail) == "youth"
+            # "wym"/"wyxl" carry the Y instead of spelling the age word out.
+            if not youth and len(rest) > 1 and rest[0] == "y":
+                code = _size_code(rest[1:])
+                if code:
+                    return True, code
+            code = _size_code(rest)
+            if code:
+                return youth, code
+    return None
 
 
 def _infant_rank(size_body: str):
@@ -356,11 +416,18 @@ def _size_rank(size: str):
       0 = infant months (1M..12M, '6 Months'), in NUMERIC order
       1 = toddler (1T..10T, 'Toddler 4'), in NUMERIC order
       2 = youth (YXS..YXL, 'Youth Medium')
-      3 = adult (XS..6XL, with or without the 'A' prefix some sheets use)
-      4 = anything unrecognised - numeric sizes ('38', '40') in numeric order,
+      3 = women's youth (W-YXXS..W-YXL, 'Women Youth Medium')
+      4 = adult (XS..6XL, with or without the 'A' prefix some sheets use)
+      5 = women's adult (W-XS..W-2XL, 'Women Large', 'Ladies L')
+      6 = anything unrecognised - numeric sizes ('38', '40') in numeric order,
           the rest alphabetically, all AFTER every known size
-      5 = the 'Universal' accessories group, always dead last
-      6 = an empty size cell, after even that
+      7 = the 'Universal' accessories group, always dead last
+      8 = an empty size cell, after even that
+
+    The two women's blocks sit BESIDE the ladder they are graded with, not after
+    both of them: W-Y* panels are cut from the youth .ai and W-* from the adult
+    one, so this order walks each pattern file exactly once. Interleaving them
+    would make the render open, close and reopen the same 135MB document.
 
     Toddlers used to land in bucket 4 and months were not understood at all:
     neither _size_code nor the 'y'/'a' prefix rules read them, so float('4t')
@@ -371,13 +438,25 @@ def _size_rank(size: str):
 
     A size the order simply doesn't contain has no group at all, so the next
     size up follows it - nothing needs to be skipped explicitly."""
-    s = str(size or "").lower().strip()
-    for ch in (" ", "-", "_", "."):
-        s = s.replace(ch, "")
+    # EVERY non-alphanumeric goes, not a hand-written list of four. This used to
+    # strip only " ", "-", "_" and ".", so a cell carrying a non-breaking space
+    # or an en dash - which is what a paste out of a PDF or Word autocorrect
+    # leaves behind - was unreadable HERE while getFriendlySize on the render
+    # side read it perfectly. The group then rendered under the right size but
+    # sorted into bucket 6 with the unknowns, at the very end, which is exactly
+    # the youth -> adult -> youth file sequence the docstring above warns about.
+    # Same expression as `flat` in getFriendlySize and _friendly_size.
+    s = re.sub(r"[^a-z0-9]", "", str(size or "").lower())
     if not s:
-        return (6, 0.0, "")
+        return (8, 0.0, "")
     if s == "universal":
-        return (5, 0.0, "")
+        return (7, 0.0, "")
+
+    # Women's FIRST: the plain youth/adult strip below would eat the age word off
+    # "youthwomenlarge" and leave "womenlarge", which nothing downstream reads.
+    women = _women_rank(s)
+    if women is not None:
+        return (3 if women[0] else 5, float(_SIZE_SEQUENCE.index(women[1])), "")
 
     youth = False
     body = s
@@ -404,12 +483,12 @@ def _size_rank(size: str):
         code = _size_code(body[1:])
 
     if code is not None:
-        return (2 if youth else 3, float(_SIZE_SEQUENCE.index(code)), "")
+        return (2 if youth else 4, float(_SIZE_SEQUENCE.index(code)), "")
 
     try:
-        return (4, float(body), "")
+        return (6, float(body), "")
     except ValueError:
-        return (4, float("inf"), s)
+        return (6, float("inf"), s)
 
 
 def _sort_size_groups(plan: Dict[str, Any]) -> None:

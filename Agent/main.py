@@ -156,7 +156,64 @@ logger = logging.getLogger("apparel-agent")
 #     never carried in the checkpoint, so every warnings report showed only the
 #     FINAL chunk's findings. That is why the 3XL pocket looked like a different
 #     bug from the 4XL one: its warning had been raised and then overwritten.
-AGENT_VERSION = "0.7.3"
+# 0.7.4 - WOMEN'S SIZES, and three silent-output bugs on the sizes that already
+# worked. Twelve new codes: W-XS..W-2XL from the adult pattern, W-YXXS..W-YXL
+# from the youth one. The order sheet may write them any way at all - "W-M",
+# "W M", "WM", "Women M", "Women's Medium", "Ladies M", "Women Adult Large",
+# "Youth Women Small" - and they resolve to one label that then picks the
+# pattern file, the panel names, the plan order and the LOCAL TAG width.
+#
+# This one MUST be installed, not waited for: the panel lookup is in
+# scripts\automate_production.jsx and does arrive through the JSX manifest, but
+# the PRE-FLIGHT half lives in services\illustrator_automation.py, which ships
+# only inside this package. An agent left on 0.7.3 takes a women's order, cannot
+# resolve "Women Large" to a panel name, and REFUSES a job the renderer beside it
+# would have completed.
+#
+# Also fixed, all three silently wrong rather than loud:
+#   - a spelled-out size with no age word in front of it ("Med", "Lg",
+#     "X-Large") was handed on as a panel name, so the run went looking for
+#     "Med Front". "Adult Med" had always worked; the bare form never had.
+#   - the size tag inside a piece now also accepts anything the ORDER SHEET
+#     would be read as this size, so a piece tagged with its own full prefix
+#     ("Women Youth Large") renames instead of keeping its drawn-in text.
+#   - "SM" is deliberately still NOT understood: "S/M" for a combined garment
+#     and "Sm" for Small flatten to the same string, and answering that with
+#     Small would cut the wrong panel in silence.
+#
+# 0.7.7 - THE RENDERS ARE CMYK. Every JPG this pipeline produced before this
+# was RGB, including every file sent to print.
+#
+# The original cause: ExportOptionsJPEG has no colour-space property at all -
+# reflect lists eleven, none of them a colour model - so the JSX's
+# `opt.imageColorSpace = ImageColorSpace.CMYK` created a plain JS property that
+# reads back as CMYK and means nothing. No error, no log line, for months.
+#
+# 0.7.5 and 0.7.6 were two failed attempts at this and must not be left
+# running. 0.7.5 drove Illustrator's Export dialog through a generated action
+# and shipped RGB at 72 DPI on its first real job; 0.7.6 turned that off and
+# went back to RGB at 300.
+#
+# What was actually wrong in 0.7.5: the action's settings parameter was 100
+# bytes, copied from nathandietz/ExportDocAsJPEG, which targets a different
+# Illustrator. Version 19.0.0 wants 104 and DISCARDS a parameter of the wrong
+# length in silence, then exports with whatever the Export dialog was last set
+# to. On a developer machine that was CMYK/300 by hand, so it looked perfect;
+# a job's fresh Illustrator starts at the factory default, which is RGB/72.
+#
+# The fix came from having Illustrator record the manual export as an action
+# and reading the bytes it wrote itself: 104 bytes, localizedName "Export" not
+# "Export As", and the settings that match the operator's own export. Verified
+# two ways - by asking one session for CMYK/300, RGB/150 and Grayscale/600 and
+# getting all three, and by comparing a rendered panel against the operator's
+# hand-made export of the same artboard: 119,261,340 pixels, zero different.
+#
+# MUST be installed, not waited for. The render half arrives through the JSX
+# manifest, but _stamp_jpeg_dpi() in services\illustrator_automation.py ships
+# only inside this package, and an agent left on 0.7.4 or earlier logs "no JFIF
+# header, dpi left as exported" against every correct CMYK file it produces -
+# the resolution is fine, it now lives in the Photoshop APP13 block.
+AGENT_VERSION = "0.7.7"
 
 # Where every job lives on this PC. Renders and the zip are left here on
 # purpose - the designer owns this folder and decides when to clear it.

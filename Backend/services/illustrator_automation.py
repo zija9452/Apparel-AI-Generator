@@ -82,8 +82,17 @@ def _stamp_jpeg_dpi(render_dir, dpi=EXPORT_DPI):
     Walks sub-folders too: renders are filed one folder per size (S/, M/, L/,
     ...), only the Universal accessories sit in the render root.
 
+    CMYK renders need nothing from this. Since exportResult() in
+    automate_production.jsx switched to the Export As action (the only route
+    that yields CMYK), Illustrator writes the resolution into the APP13
+    Photoshop ResolutionInfo block instead of APP0/JFIF - verified 300.0 x
+    300.0 on those files. They have no APP0 at all, so the patch below cannot
+    apply and must not be reported as a fault: the dpi is already right, just
+    recorded somewhere else. Only a file with NEITHER marker is worth a warning.
+
     Returns the number of files stamped."""
     patched = 0
+    already = 0
     for folder, _dirs, files in os.walk(render_dir):
         for name in sorted(files):
             if not name.lower().endswith((".jpg", ".jpeg")):
@@ -95,14 +104,19 @@ def _stamp_jpeg_dpi(render_dir, dpi=EXPORT_DPI):
                     # starting at byte 13.
                     if (len(head) < 18 or head[:4] != b"\xff\xd8\xff\xe0"
                             or head[6:11] != b"JFIF\x00"):
-                        logger.warning(f"{name}: no JFIF header, dpi left as exported")
+                        f.seek(0)
+                        if b"Photoshop 3.0\x00" in f.read(65536):
+                            already += 1
+                        else:
+                            logger.warning(f"{name}: no JFIF header, dpi left as exported")
                         continue
                     f.seek(13)
                     f.write(struct.pack(">BHH", 1, dpi, dpi))  # 1 = dots per inch
                 patched += 1
             except Exception as e:
                 logger.warning(f"Could not stamp dpi on {name}: {e}")
-    logger.info(f"Stamped {dpi} dpi on {patched} render(s)")
+    logger.info(f"Stamped {dpi} dpi on {patched} render(s); "
+                f"{already} already carried it in the Photoshop block")
     return patched
 
 
@@ -855,11 +869,80 @@ _FRIENDLY_SIZE_MAP = {
     "6T": "6T", "7T": "7T", "8T": "8T", "9T": "9T", "10T": "10T",
     "1M": "1M", "2M": "2M", "3M": "3M", "4M": "4M", "5M": "5M", "6M": "6M",
     "7M": "7M", "8M": "8M", "9M": "9M", "10M": "10M", "11M": "11M", "12M": "12M",
+    # Women's ladder. Like youth, the label IS the code - the panels are named
+    # "W-M Front", not "Women Medium Front". Keyed on the PUNCTUATION-FREE
+    # spelling because _friendly_size looks the flat form up too, which is what
+    # makes "W-M", "W M" and "WM" one key. No other entry starts with "W", which
+    # is what lets the women's prefix rule below strip a leading W safely.
+    "WXS": "W-XS", "WS": "W-S", "WM": "W-M", "WL": "W-L", "WXL": "W-XL",
+    "W2XL": "W-2XL", "WXXL": "W-2XL",
+    "WYXXS": "W-YXXS", "WYXS": "W-YXS", "WYS": "W-YS",
+    "WYM": "W-YM", "WYL": "W-YL", "WYXL": "W-YXL",
 }
 
+# Prefixes that mark a women's size, longest first. EVERY one that fits the text
+# is tried, not just the first: "WOMENSMALL" is "WOMENS" + "MALL" (nothing) or
+# "WOMEN" + "SMALL" (W-S), and stopping at the first would answer "Women Small"
+# with nothing at all. Mirrors W_HEADS in automate_production.jsx.
+_WOMEN_HEADS = ("WOMENS", "WOMEN", "LADIES", "W")
+
+
+def _women_size(flat):
+    """The canonical women's label for an already-flattened size string
+    (uppercase, every non-alphanumeric removed), or None if it is not one.
+
+    Accepts the age word on EITHER side of the women's word - both "Women Adult
+    Large" and "Adult Women Large" get written - and treats ADULT as noise the
+    way the plain ladder does (AM == M), since the women's ladder is adult unless
+    the code says YOUTH. Mirrors womenSize in automate_production.jsx.
+
+    Returns None rather than guessing: what is left after the words come off must
+    already be a known code, so "WHITE" parses as W + "HITE", misses, and the
+    caller falls through with the original string untouched.
+    """
+    # KNOWN AMBIGUITY, resolved in favour of the size: "Women S" and the
+    # possessive "Women's" both flatten to "WOMENS", so a cell holding nothing but
+    # the word "Womens" reads as W-S. "Women S" is a spelling a customer really
+    # types in a Size column; a bare "Womens" is a malformed cell that carries no
+    # size at all, so it would be wrong either way. The unambiguous heads need no
+    # guard - "Women", "Ladies" and "W" alone leave nothing that is a code, so
+    # they already fall through untouched.
+    for head in _WOMEN_HEADS:
+        for lead in ("", "YOUTH", "ADULT"):
+            if not flat.startswith(lead + head):
+                continue
+            rest, trail = flat[len(lead) + len(head):], ""
+            for word in ("YOUTH", "ADULT"):
+                if rest.startswith(word):
+                    trail, rest = word, rest[len(word):]
+                    break
+            age = "Y" if (lead or trail) == "YOUTH" else ""
+            rest = _SIZE_WORDS.get(rest, rest)
+            label = _FRIENDLY_SIZE_MAP.get("W" + age + rest)
+            if label:
+                return label
+    return None
+
 # Spelled-out words that mean a bare size code, so "Youth Small" resolves the
-# same way "Youth S" does. Mirrors SIZE_WORDS in the JSX.
-_SIZE_WORDS = {"SMALL": "S", "MED": "M", "MEDIUM": "M", "LARGE": "L"}
+# same way "Youth S" does. Mirrors sizeWords() in the JSX.
+#
+# This used to hold four entries (SMALL/MED/MEDIUM/LARGE) and was only consulted
+# on what FOLLOWS an age word, so a sheet that simply said "Med", "Lg" or
+# "X-Large" reached none of it and the run went looking for a panel called
+# "Med Front".
+_SIZE_WORDS = {
+    # "SM" is deliberately ABSENT: a sheet writing "S/M" for a combined
+    # small-medium garment flattens to the same "SM" as one writing "Sm" for
+    # Small, and answering that with Small would cut the wrong panel silently.
+    "XSMALL": "XS", "EXTRASMALL": "XS",
+    "SMALL": "S",
+    "MED": "M", "MEDIUM": "M",
+    "LARGE": "L", "LG": "L",
+    "XLARGE": "XL", "EXTRALARGE": "XL",
+    "XXLARGE": "2XL", "2XLARGE": "2XL", "EXTRAEXTRALARGE": "2XL",
+    "XXXLARGE": "3XL", "3XLARGE": "3XL",
+    "XXXXLARGE": "4XL", "4XLARGE": "4XL",
+}
 
 
 def _friendly_size(size):
@@ -872,6 +955,11 @@ def _friendly_size(size):
     flat = up.replace(" ", "")
     if flat in _FRIENDLY_SIZE_MAP:
         return _FRIENDLY_SIZE_MAP[flat]
+    # A spelled-out size with NO age word in front of it - "Med", "Lg",
+    # "X-Large". The age-word branch below runs its `rest` through the same
+    # table, so "Adult Med" always worked; a bare "Med" never reached it.
+    if flat in _SIZE_WORDS and _SIZE_WORDS[flat] in _FRIENDLY_SIZE_MAP:
+        return _FRIENDLY_SIZE_MAP[_SIZE_WORDS[flat]]
     # Spelled-out age group: "Youth XS" == "YXS", "Adult XL" == "AXL" == "XL".
     # Only the age WORD is consumed - what follows must already be a known code,
     # so "Adult Something" is returned untouched rather than guessed at.
@@ -908,6 +996,13 @@ def _friendly_size(size):
     # can never mis-read a real size name.
     if len(flat) > 1 and flat[0] == "A" and flat[1:] in _FRIENDLY_SIZE_MAP:
         return _FRIENDLY_SIZE_MAP[flat[1:]]
+    # Women's sizes. Matched on `flat` rather than on the head/rest split above,
+    # which cannot read the possessive: "Women's Large" normalises to
+    # "WOMEN S LARGE", head "WOMEN" + rest "SLARGE". Flat it is "WOMENSLARGE" and
+    # the prefix comes off cleanly.
+    women = _women_size(flat)
+    if women:
+        return women
     # "6MO" / "6MONTHS" / "MONTH6" written with no space at all. A bare "6M" is
     # already a map key and was answered above, so this only ever sees the
     # spelled-out forms.
@@ -917,6 +1012,40 @@ def _friendly_size(size):
         if (num + "M") in _FRIENDLY_SIZE_MAP:
             return _FRIENDLY_SIZE_MAP[num + "M"]
     return size
+
+
+_WOMEN_BODY_WORDS = {"S": "Small", "M": "Medium", "L": "Large", "2XL": "XXL"}
+
+
+def _women_aliases(size_label):
+    """Every spelling of ONE women's size a pattern file might carry, for a label
+    already known to start "W-". Mirrors womenAliases in automate_production.jsx.
+
+    "W M" and "WM" are not generated: the lookup drops all punctuation before
+    comparing, so they are the same key as the canonical "W-M" and would only
+    cost a repeated probe. "Adult" appears only on the adult codes - it is what
+    distinguishes them from the W-Y ones and is meaningless on a youth size.
+    """
+    body = str(size_label)[2:]                      # "M", "2XL", "YM", "YXXS"
+    bu = body.upper()
+    if len(bu) > 1 and bu[0] == "Y":
+        tail = body[1:]                             # "M", "XXS"
+        codes = [body, "Youth " + tail]
+        if tail.upper() in _WOMEN_BODY_WORDS:
+            codes.append("Youth " + _WOMEN_BODY_WORDS[tail.upper()])
+        age_heads = ("Youth Women ", "Youth Womens ")
+        age_bodies = [tail]
+        if tail.upper() in _WOMEN_BODY_WORDS:
+            age_bodies.append(_WOMEN_BODY_WORDS[tail.upper()])
+    else:
+        age_bodies = [body]
+        if bu in _WOMEN_BODY_WORDS:
+            age_bodies.append(_WOMEN_BODY_WORDS[bu])
+        codes = age_bodies + ["Adult " + c for c in age_bodies]
+        age_heads = ("Adult Women ", "Adult Womens ")
+    out = [h + c for h in ("W ", "Women ", "Womens ") for c in codes]
+    out += [h + c for h in age_heads for c in age_bodies]
+    return out
 
 
 def _size_aliases(size_label):
@@ -929,6 +1058,14 @@ def _size_aliases(size_label):
     def add(n):
         if n not in out:
             out.append(n)
+
+    # Women's sizes take none of the youth/toddler/month/adult spellings below,
+    # so they are answered here and returned.
+    if up.startswith("W-"):
+        for n in _women_aliases(size_label):
+            if n.replace(" ", "").upper() != up.replace("-", ""):
+                add(n)
+        return out
 
     if len(up) > 1 and up[0] == "Y" and up in _FRIENDLY_SIZE_MAP:
         add("Youth " + str(size_label)[1:])
@@ -981,6 +1118,12 @@ def is_youth_pattern_size(size):
     if label in _YOUTH_PATTERN_CODES:
         return True
     if re.match(r"^[0-9]+[TM]$", label):
+        return True
+    # The youth women's codes are graded in the YOUTH file beside the plain youth
+    # ones; W-XS..W-2XL stay in the adult file. Tested on the "W-Y" prefix rather
+    # than the six codes, so W-YXXS - which has no plain-youth counterpart - is
+    # routed by the same rule as the rest.
+    if label.startswith("W-Y"):
         return True
     # A spelling neither map knows but which still says "Youth" out loud. Sent
     # to the youth file rather than silently cut from the adult pattern - the

@@ -225,8 +225,33 @@ const FIELD_LABELS: Record<string, string> = {
   fonts: "Required Fonts",
 };
 
+/** True when a women's size is one of the YOUTH-graded ones (W-YXXS..W-YXL),
+ *  as opposed to W-XS..W-2XL. `flat` is the cell uppercased with every space and
+ *  punctuation already removed, so "W-YM", "WYM", "Women Youth M" and "Youth
+ *  Women M" all arrive here as something this can read.
+ *
+ *  Every prefix that fits is tried rather than just the first, for the same
+ *  reason _women_size does it in illustrator_automation.py: "WOMENSMALL" is
+ *  "WOMENS" + "MALL" or "WOMEN" + "SMALL", and only the second reading is a size.
+ *  A cell that is not a women's size at all matches nothing and returns false. */
+function isWomenYouthSize(flat: string): boolean {
+  for (const head of ["WOMENS", "WOMEN", "LADIES", "W"]) {
+    for (const lead of ["", "YOUTH", "ADULT"]) {
+      if (!flat.startsWith(lead + head)) continue;
+      const rest = flat.slice(lead.length + head.length);
+      if (!rest) continue;
+      if (lead === "YOUTH" || rest.startsWith("YOUTH")) return true;
+      // "WYM" / "WYXL" carry the Y instead of spelling the age word out.
+      if (rest.length > 1 && rest[0] === "Y") return true;
+    }
+  }
+  return false;
+}
+
 /** Sizes whose pattern pieces live in the YOUTH .ai rather than the adult one:
- *  YXS-YXL, the toddler codes 1T-10T and the infant months 1M-12M.
+ *  YXS-YXL, the toddler codes 1T-10T, the infant months 1M-12M and the women's
+ *  youth codes W-YXXS-W-YXL. The women's ADULT codes (W-XS..W-2XL) are cut from
+ *  the adult file like every other adult size.
  *
  *  Mirrors is_youth_pattern_size in illustrator_automation.py and
  *  isYouthPatternSize in automate_production.jsx. This copy is deliberately
@@ -242,6 +267,7 @@ function isYouthSize(raw: string): boolean {
   const s = raw.toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
   if (/^(YXS|YS|YM|YL|YXL)$/.test(s.replace(/ /g, ""))) return true;
   if (/^[0-9]+ ?[TM]$/.test(s)) return true;
+  if (isWomenYouthSize(s.replace(/ /g, ""))) return true;
   return /^(YOUTH|TODDLER|INFANT|BABY)\b/.test(s) || /\b(MONTHS?|TODDLER)$/.test(s);
 }
 
@@ -638,7 +664,7 @@ export default function UploadForm({
             <FileDrop
               name="pattern_youth_ai"
               label="Youth Pattern"
-              hint=".ai, youth YXS-YXL, toddler 1T-10T, months 1M-12M"
+              hint=".ai, youth YXS-YXL, women's youth W-YXXS-W-YXL, toddler 1T-10T, months 1M-12M"
               accept=".ai"
               icon={<Icon.Pattern className="h-4 w-4" />}
               entry={picked["pattern_youth_ai"]}
@@ -1057,8 +1083,8 @@ export default function UploadForm({
             }
           >
             Personalizes the size-tag letter and pins its bordered box to a fixed width:{" "}
-            <strong>3in for adult sizes</strong> (XS, S, M, L, XL, 2XL…) and{" "}
-            <strong>2.5in for youth sizes</strong> (YXS, YS, YM, YL, YXL).
+            <strong>3in for adult sizes</strong> (XS, S, M, L, XL, 2XL, W-XS…W-2XL) and{" "}
+            <strong>2.5in for youth sizes</strong> (YXS…YXL, W-YXXS…W-YXL, 1T-10T, 1M-12M).
           </Toggle>
 
           <Toggle
